@@ -1,0 +1,6 @@
+openai
+python-dotenv
+pillow
+pytesseract
+mss
+pyautogui
