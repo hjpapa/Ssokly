@@ -18,7 +18,7 @@ MISSING_KEY_MESSAGE = (
     "OpenAI API 키가 설정되어 있지 않습니다.\n\n"
     "프로젝트 폴더에 .env 파일을 만들고 다음 내용을 입력해 주세요.\n"
     "OPENAI_API_KEY=your_api_key_here\n"
-    "OPENAI_MODEL=gpt-5-nano"
+    "OPENAI_ANALYSIS_MODEL=gpt-5-nano"
 )
 
 ANALYSIS_PROMPT = """
@@ -73,7 +73,11 @@ def analyze_document_task(text: str) -> str:
 
     load_dotenv(dotenv_path=ENV_PATH)
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    model = os.getenv("OPENAI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    model = (
+        os.getenv("OPENAI_ANALYSIS_MODEL", "").strip()
+        or os.getenv("OPENAI_MODEL", "").strip()
+        or DEFAULT_MODEL
+    )
 
     if not api_key or api_key == "your_api_key_here":
         return MISSING_KEY_MESSAGE

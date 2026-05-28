@@ -46,7 +46,7 @@ class SsoklyApp(tk.Tk):
         button_bar = ttk.Frame(root)
         button_bar.pack(fill=tk.X, pady=(18, 12))
 
-        self.capture_button = ttk.Button(button_bar, text="영역 드래그 캡처하기", command=self.capture_area)
+        self.capture_button = ttk.Button(button_bar, text="화면 글씨 인식하기", command=self.capture_area)
         self.capture_button.pack(side=tk.LEFT, padx=(0, 8))
 
         self.load_button = ttk.Button(button_bar, text="이미지 파일 불러오기", command=self.load_image_file)
@@ -66,7 +66,7 @@ class SsoklyApp(tk.Tk):
         panes.add(ocr_frame, weight=1)
         panes.add(result_frame, weight=1)
 
-        ttk.Label(ocr_frame, text="OCR 추출 텍스트", font=("Malgun Gothic", 11, "bold")).pack(anchor=tk.W)
+        ttk.Label(ocr_frame, text="AI OCR 추출 텍스트", font=("Malgun Gothic", 11, "bold")).pack(anchor=tk.W)
         self.ocr_text = scrolledtext.ScrolledText(
             ocr_frame,
             wrap=tk.WORD,
@@ -101,7 +101,7 @@ class SsoklyApp(tk.Tk):
 
     def capture_area(self) -> None:
         try:
-            self.status_var.set("드래그할 영역을 선택해 주세요. 취소하려면 Esc를 누르세요.")
+            self.status_var.set("인식할 공문 영역을 사각형으로 드래그해 주세요. 취소하려면 Esc를 누르세요.")
             self.withdraw()
             self.after(200, self._capture_after_hide)
         except Exception as exc:
@@ -151,7 +151,7 @@ class SsoklyApp(tk.Tk):
             self.status_var.set("이미지를 불러오지 못했습니다.")
 
     def _run_ocr(self, image: Image.Image) -> None:
-        self.status_var.set("OCR로 텍스트를 추출하는 중입니다...")
+        self.status_var.set("OpenAI 이미지 OCR로 텍스트를 추출하는 중입니다...")
         self._set_buttons_state(tk.DISABLED)
 
         def worker() -> None:
@@ -171,7 +171,7 @@ class SsoklyApp(tk.Tk):
         self.ocr_text.insert(tk.END, text)
         self._set_buttons_state(tk.NORMAL)
         if text.strip():
-            self.status_var.set("OCR 텍스트 추출이 완료되었습니다.")
+            self.status_var.set("AI OCR 텍스트 추출이 완료되었습니다.")
         else:
             self.status_var.set("OCR 결과가 비어 있습니다. 이미지 품질을 확인해 주세요.")
             messagebox.showinfo("OCR 결과 없음", "이미지에서 텍스트를 찾지 못했습니다. 더 선명한 이미지로 다시 시도해 주세요.")

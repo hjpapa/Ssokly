@@ -8,6 +8,17 @@ from PIL import Image
 MIN_CAPTURE_SIZE = 10
 
 
+def _virtual_screen_bounds() -> Tuple[int, int, int, int]:
+    with mss.MSS() as sct:
+        monitor = sct.monitors[0]
+        return (
+            monitor["left"],
+            monitor["top"],
+            monitor["width"],
+            monitor["height"],
+        )
+
+
 class RegionSelector:
     def __init__(self, parent: tk.Tk) -> None:
         self.parent = parent
@@ -16,8 +27,11 @@ class RegionSelector:
         self.rect_id: Optional[int] = None
         self.selection: Optional[Tuple[int, int, int, int]] = None
 
+        left, top, width, height = _virtual_screen_bounds()
+
         self.overlay = tk.Toplevel(parent)
-        self.overlay.attributes("-fullscreen", True)
+        self.overlay.overrideredirect(True)
+        self.overlay.geometry(f"{width}x{height}{left:+d}{top:+d}")
         self.overlay.attributes("-alpha", 0.25)
         self.overlay.attributes("-topmost", True)
         self.overlay.configure(bg="black")
@@ -36,6 +50,7 @@ class RegionSelector:
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.overlay.bind("<Escape>", self._on_cancel)
 
+        self.overlay.update_idletasks()
         self.overlay.focus_force()
         self.overlay.grab_set()
 
