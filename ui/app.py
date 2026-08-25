@@ -21,6 +21,12 @@ from services.document_service import (
     read_text_file,
 )
 from services.ocr_service import extract_text_from_file, extract_text_from_image
+from services.settings_store import (
+    MAX_OPACITY_PERCENT,
+    MIN_OPACITY_PERCENT,
+    WindowSettings,
+    WindowSettingsStore,
+)
 from services.task_store import TaskRecord, TaskStore
 from services.workflow_service import extract_section
 
@@ -46,7 +52,12 @@ SIDEBAR_TEXT = "#effaf7"
 AUTOSAVE_DELAY_MS = 700
 TASK_SEARCH_DELAY_MS = 200
 OPERATION_PROGRESS_INTERVAL_MS = 250
+WINDOW_SETTINGS_SAVE_DELAY_MS = 250
 DEFAULT_OUTPUT_MODE = "통합 실행안"
+NORMAL_WINDOW_GEOMETRY = "1480x920"
+NORMAL_WINDOW_MIN_SIZE = (1180, 760)
+COMPACT_WINDOW_SIZE = (680, 720)
+COMPACT_WINDOW_MIN_SIZE = (620, 560)
 OPERATION_LABELS = {
     "ocr": "이미지 OCR",
     "document": "문서 읽기",
@@ -59,16 +70,28 @@ class SsoklyApp(tk.Tk):
         self,
         task_store: Optional[TaskStore] = None,
         capture_store: Optional[CaptureStore] = None,
+        settings_store: Optional[WindowSettingsStore] = None,
     ) -> None:
         super().__init__()
 
         self.title("Ssokly - 공문 실행 정리")
-        self.geometry("1480x920")
-        self.minsize(1180, 760)
+        self.geometry(NORMAL_WINDOW_GEOMETRY)
+        self.minsize(*NORMAL_WINDOW_MIN_SIZE)
         self._set_window_icon()
 
         self.capture_store = capture_store or CaptureStore()
         self.task_store = task_store or TaskStore()
+        self.settings_store = settings_store or WindowSettingsStore(
+            app_data_dir=self.task_store.app_data_dir
+        )
+        loaded_window_settings = self.settings_store.load()
+        self.compact_mode = False
+        self.always_on_top = loaded_window_settings.always_on_top
+        self.opacity_percent = loaded_window_settings.opacity_percent
+        self._initial_compact_mode = loaded_window_settings.compact_mode
+        self._normal_geometry = NORMAL_WINDOW_GEOMETRY
+        self._normal_window_state = "normal"
+        self._settings_save_after_id: Optional[str] = None
         self.capture_records: list[CaptureRecord] = []
         self.task_records: list[TaskRecord] = []
         self.preview_photo: Optional[ImageTk.PhotoImage] = None
@@ -112,6 +135,7 @@ class SsoklyApp(tk.Tk):
 
         self._build_styles()
         self._build_ui()
+        self._apply_initial_window_settings()
         self._bind_change_tracking()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh_task_library()
@@ -192,18 +216,23 @@ class SsoklyApp(tk.Tk):
         )
 
     def _build_ui(self) -> None:
-        root = ttk.Frame(self, style="App.TFrame")
-        root.pack(fill=tk.BOTH, expand=True)
+        self.root_frame = ttk.Frame(self, style="App.TFrame")
+        self.root_frame.pack(fill=tk.BOTH, expand=True)
 
-        self._build_sidebar(root)
+        self._build_sidebar(self.root_frame)
 
-        workspace = ttk.Frame(root, style="App.TFrame", padding=(24, 18, 24, 22))
-        workspace.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.workspace = ttk.Frame(
+            self.root_frame,
+            style="App.TFrame",
+            padding=(24, 18, 24, 22),
+        )
+        self.workspace.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self._build_header(workspace)
-        self._build_footer(workspace)
+        self._build_window_controls(self.workspace)
+        self._build_header(self.workspace)
+        self._build_footer(self.workspace)
 
-        self.notebook = ttk.Notebook(workspace, style="Notebook.TNotebook")
+        self.notebook = ttk.Notebook(self.workspace, style="Notebook.TNotebook")
         self.notebook.pack(fill=tk.BOTH, expand=True, pady=(16, 0))
 
         self.source_tab = ttk.Frame(self.notebook, style="Surface.TFrame", padding=18)
@@ -213,6 +242,225 @@ class SsoklyApp(tk.Tk):
 
         self._build_source_tab()
         self._build_result_tab()
+
+    def _build_window_controls(self, workspace: ttk.Frame) -> None:
+        self.window_controls = ttk.Frame(workspace, style="App.TFrame")
+        self.window_controls.pack(fill=tk.X, pady=(0, 10))
+
+        controls = ttk.Frame(self.window_controls, style="App.TFrame")
+        controls.pack(side=tk.RIGHT)
+
+        self.compact_button = ttk.Button(
+            controls,
+            text="컴팩트",
+            command=lambda: self.set_compact_mode(not self.compact_mode),
+        )
+        self.compact_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.always_on_top_var = tk.BooleanVar(value=self.always_on_top)
+        self.topmost_button = ttk.Checkbutton(
+            controls,
+            text="항상 위",
+            variable=self.always_on_top_var,
+            command=lambda: self.set_always_on_top(self.always_on_top_var.get()),
+        )
+        self.topmost_button.pack(side=tk.LEFT, padx=(0, 12))
+
+        self.opacity_label_var = tk.StringVar(
+            value=f"투명도 {self.opacity_percent}%"
+        )
+        ttk.Label(
+            controls,
+            textvariable=self.opacity_label_var,
+            style="TLabel",
+        ).pack(side=tk.LEFT, padx=(0, 7))
+        self.opacity_scale_var = tk.DoubleVar(value=float(self.opacity_percent))
+        self.opacity_scale = ttk.Scale(
+            controls,
+            from_=MIN_OPACITY_PERCENT,
+            to=MAX_OPACITY_PERCENT,
+            length=96,
+            variable=self.opacity_scale_var,
+            command=self._on_opacity_scale,
+        )
+        self.opacity_scale.pack(side=tk.LEFT)
+
+    def _apply_initial_window_settings(self) -> None:
+        self.set_always_on_top(self.always_on_top, persist=False)
+        self.set_opacity_percent(self.opacity_percent, persist=False)
+        if self._initial_compact_mode:
+            self.set_compact_mode(True, persist=False, initial=True)
+        else:
+            self.compact_button.configure(text="컴팩트")
+
+    def set_compact_mode(
+        self,
+        enabled: bool,
+        *,
+        persist: bool = True,
+        initial: bool = False,
+    ) -> None:
+        enabled = bool(enabled)
+        if enabled == self.compact_mode:
+            self.compact_button.configure(
+                text="전체 화면" if enabled else "컴팩트"
+            )
+            if persist:
+                self._schedule_window_settings_save()
+            return
+
+        if enabled:
+            self.update_idletasks()
+            if not initial:
+                try:
+                    self._normal_window_state = str(self.state())
+                except tk.TclError:
+                    self._normal_window_state = "normal"
+                if self._normal_window_state == "zoomed":
+                    try:
+                        self.state("normal")
+                        self.update_idletasks()
+                    except tk.TclError:
+                        self._normal_window_state = "normal"
+                geometry = self.geometry()
+                if not geometry.startswith("1x1"):
+                    self._normal_geometry = geometry
+
+            x = self.winfo_x()
+            y = self.winfo_y()
+            self.compact_mode = True
+            self.sidebar.pack_forget()
+            self.header_title_block.pack_forget()
+            self.creator_footer.pack_forget()
+            self.task_detail_actions.pack_forget()
+            self.result_title_block.pack_forget()
+            for button in self.partial_copy_buttons:
+                button.pack_forget()
+            self.workspace.configure(padding=(12, 10, 12, 12))
+            self.minsize(*COMPACT_WINDOW_MIN_SIZE)
+            compact_width, compact_height = COMPACT_WINDOW_SIZE
+            self.geometry(f"{compact_width}x{compact_height}{x:+d}{y:+d}")
+            self.compact_button.configure(text="전체 화면")
+        else:
+            self.compact_mode = False
+            self.workspace.configure(padding=(24, 18, 24, 22))
+            self.minsize(*NORMAL_WINDOW_MIN_SIZE)
+            if not self.sidebar.winfo_manager():
+                self.sidebar.pack(
+                    side=tk.LEFT,
+                    fill=tk.Y,
+                    before=self.workspace,
+                )
+            if not self.header_title_block.winfo_manager():
+                self.header_title_block.pack(
+                    side=tk.LEFT,
+                    fill=tk.X,
+                    expand=True,
+                    before=self.header_button_bar,
+                )
+            if not self.creator_footer.winfo_manager():
+                self.creator_footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+            if not self.task_detail_actions.winfo_manager():
+                self.task_detail_actions.pack(fill=tk.X, pady=(8, 0))
+            if not self.result_title_block.winfo_manager():
+                self.result_title_block.pack(
+                    side=tk.LEFT,
+                    before=self.result_action_bar,
+                )
+            for button in self.partial_copy_buttons:
+                if not button.winfo_manager():
+                    button.pack(side=tk.LEFT, padx=(0, 6), before=self.copy_button)
+            self.geometry(self._normal_geometry)
+            self.compact_button.configure(text="컴팩트")
+            if self._normal_window_state == "zoomed":
+                self.after_idle(self._restore_zoomed_state)
+
+        if persist:
+            self._schedule_window_settings_save()
+
+    def _restore_zoomed_state(self) -> None:
+        if self._closing or self.compact_mode:
+            return
+        try:
+            self.state("zoomed")
+        except tk.TclError:
+            pass
+
+    def set_always_on_top(self, enabled: bool, *, persist: bool = True) -> None:
+        self.always_on_top = bool(enabled)
+        self.always_on_top_var.set(self.always_on_top)
+        try:
+            self.attributes("-topmost", self.always_on_top)
+        except tk.TclError:
+            if hasattr(self, "status_var"):
+                self.status_var.set("이 환경에서는 항상 위 설정을 적용할 수 없습니다.")
+        if persist:
+            self._schedule_window_settings_save()
+
+    def _on_opacity_scale(self, value: str) -> None:
+        try:
+            opacity_percent = round(float(value))
+        except (TypeError, ValueError):
+            opacity_percent = MAX_OPACITY_PERCENT
+        self.set_opacity_percent(opacity_percent)
+
+    def set_opacity_percent(self, value: int, *, persist: bool = True) -> None:
+        if isinstance(value, bool):
+            opacity_percent = MAX_OPACITY_PERCENT
+        else:
+            try:
+                opacity_percent = round(float(value))
+            except (TypeError, ValueError):
+                opacity_percent = MAX_OPACITY_PERCENT
+        opacity_percent = min(
+            MAX_OPACITY_PERCENT,
+            max(MIN_OPACITY_PERCENT, opacity_percent),
+        )
+        self.opacity_percent = opacity_percent
+        if abs(self.opacity_scale_var.get() - opacity_percent) > 0.01:
+            self.opacity_scale_var.set(float(opacity_percent))
+        self.opacity_label_var.set(f"투명도 {opacity_percent}%")
+        try:
+            self.attributes("-alpha", opacity_percent / 100)
+        except tk.TclError:
+            if hasattr(self, "status_var"):
+                self.status_var.set("이 환경에서는 투명도 설정을 적용할 수 없습니다.")
+        if persist:
+            self._schedule_window_settings_save()
+
+    def _schedule_window_settings_save(self) -> None:
+        if self._closing:
+            return
+        self._cancel_window_settings_save()
+        self._settings_save_after_id = self.after(
+            WINDOW_SETTINGS_SAVE_DELAY_MS,
+            self._flush_window_settings,
+        )
+
+    def _cancel_window_settings_save(self) -> None:
+        if self._settings_save_after_id is None:
+            return
+        try:
+            self.after_cancel(self._settings_save_after_id)
+        except tk.TclError:
+            pass
+        self._settings_save_after_id = None
+
+    def _flush_window_settings(self) -> bool:
+        self._cancel_window_settings_save()
+        try:
+            self.settings_store.save(
+                WindowSettings(
+                    compact_mode=self.compact_mode,
+                    always_on_top=self.always_on_top,
+                    opacity_percent=self.opacity_percent,
+                )
+            )
+        except Exception as exc:
+            if hasattr(self, "status_var"):
+                self.status_var.set(f"창 설정을 저장하지 못했습니다: {exc}")
+            return False
+        return True
 
     def _build_footer(self, workspace: ttk.Frame) -> None:
         self.creator_footer = tk.Frame(workspace, bg=MINT_CANVAS, height=30)
@@ -387,58 +635,62 @@ class SsoklyApp(tk.Tk):
         ).pack(side=tk.BOTTOM, anchor=tk.W, padx=18, pady=18)
 
     def _build_header(self, workspace: ttk.Frame) -> None:
-        header = ttk.Frame(workspace, style="App.TFrame")
-        header.pack(fill=tk.X)
+        self.header_frame = ttk.Frame(workspace, style="App.TFrame")
+        self.header_frame.pack(fill=tk.X)
 
-        title_block = ttk.Frame(header, style="App.TFrame")
-        title_block.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Label(title_block, text="공문 실행 정리", style="Title.TLabel").pack(anchor=tk.W)
+        self.header_title_block = ttk.Frame(self.header_frame, style="App.TFrame")
+        self.header_title_block.pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Label(
-            title_block,
+            self.header_title_block,
+            text="공문 실행 정리",
+            style="Title.TLabel",
+        ).pack(anchor=tk.W)
+        ttk.Label(
+            self.header_title_block,
             text="문서를 읽고, 놓치지 않을 순서와 일정으로 바꿉니다.",
             style="TLabel",
         ).pack(anchor=tk.W, pady=(4, 0))
 
-        button_bar = ttk.Frame(header, style="App.TFrame")
-        button_bar.pack(side=tk.RIGHT, anchor=tk.NE)
+        self.header_button_bar = ttk.Frame(self.header_frame, style="App.TFrame")
+        self.header_button_bar.pack(side=tk.RIGHT, anchor=tk.NE)
         self.recent_count_var = tk.StringVar(value="최근 캡처 0/8")
         self.recent_button = ttk.Button(
-            button_bar,
+            self.header_button_bar,
             textvariable=self.recent_count_var,
             command=self.show_recent_captures,
         )
         self.recent_button.pack(side=tk.LEFT, padx=(0, 8))
         self.capture_button = ttk.Button(
-            button_bar,
+            self.header_button_bar,
             text="화면 캡처",
             style="Primary.TButton",
             command=self.capture_area,
         )
         self.capture_button.pack(side=tk.LEFT, padx=(0, 8))
         self.load_button = ttk.Button(
-            button_bar,
+            self.header_button_bar,
             text="첨부 파일 열기",
             style="Secondary.TButton",
             command=self.load_attachment_file,
         )
         self.load_button.pack(side=tk.LEFT, padx=(0, 8))
         self.input_button = ttk.Button(
-            button_bar,
+            self.header_button_bar,
             text="직접 입력",
             command=self.focus_ocr_text,
         )
         self.input_button.pack(side=tk.LEFT)
 
-        status_row = ttk.Frame(workspace, style="App.TFrame")
-        status_row.pack(fill=tk.X, pady=(10, 0))
+        self.status_row = ttk.Frame(workspace, style="App.TFrame")
+        self.status_row.pack(fill=tk.X, pady=(10, 0))
         self.status_var = tk.StringVar(value="새 문서를 캡처하거나 첨부 파일을 열어 주세요.")
         ttk.Label(
-            status_row,
+            self.status_row,
             textvariable=self.status_var,
             style="Status.TLabel",
         ).pack(side=tk.LEFT, anchor=tk.W, fill=tk.X, expand=True)
 
-        self.processing_frame = ttk.Frame(status_row, style="App.TFrame")
+        self.processing_frame = ttk.Frame(self.status_row, style="App.TFrame")
         self.processing_var = tk.StringVar(value="")
         ttk.Label(
             self.processing_frame,
@@ -453,10 +705,12 @@ class SsoklyApp(tk.Tk):
         )
         self.processing_progress.pack(side=tk.LEFT)
 
-        task_bar = tk.Frame(workspace, bg=MINT_PANEL, padx=12, pady=10)
-        task_bar.pack(fill=tk.X, pady=(12, 0))
+        self.task_bar = tk.Frame(workspace, bg=MINT_PANEL, padx=12, pady=10)
+        self.task_bar.pack(fill=tk.X, pady=(12, 0))
+        self.task_identity_row = tk.Frame(self.task_bar, bg=MINT_PANEL)
+        self.task_identity_row.pack(fill=tk.X)
         tk.Label(
-            task_bar,
+            self.task_identity_row,
             text="업무 제목",
             bg=MINT_PANEL,
             fg=TEAL_DEEP,
@@ -464,7 +718,7 @@ class SsoklyApp(tk.Tk):
         ).pack(side=tk.LEFT, padx=(0, 8))
         self.task_title_var = tk.StringVar(value=self._fallback_task_title())
         self.task_title_entry = tk.Entry(
-            task_bar,
+            self.task_identity_row,
             textvariable=self.task_title_var,
             bg="#ffffff",
             fg=TEAL_INK,
@@ -477,7 +731,7 @@ class SsoklyApp(tk.Tk):
 
         self.save_state_var = tk.StringVar(value="저장 전")
         self.save_state_label = tk.Label(
-            task_bar,
+            self.task_identity_row,
             textvariable=self.save_state_var,
             bg=MINT_PANEL,
             fg=TEAL_MUTED,
@@ -485,30 +739,33 @@ class SsoklyApp(tk.Tk):
         )
         self.save_state_label.pack(side=tk.LEFT, padx=10)
         self.save_task_button = ttk.Button(
-            task_bar,
+            self.task_identity_row,
             text="업무로 저장",
             style="Primary.TButton",
             command=lambda: self.save_current_task(allow_during_operation=True),
         )
-        self.save_task_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.save_task_button.pack(side=tk.LEFT)
+
+        self.task_detail_actions = tk.Frame(self.task_bar, bg=MINT_PANEL)
+        self.task_detail_actions.pack(fill=tk.X, pady=(8, 0))
         self.current_status_button = ttk.Button(
-            task_bar,
+            self.task_detail_actions,
             text="완료로 표시",
             command=self.toggle_current_task_status,
         )
-        self.current_status_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.current_status_button.pack(side=tk.RIGHT, padx=(6, 0))
         self.reread_source_button = ttk.Button(
-            task_bar,
+            self.task_detail_actions,
             text="원문 다시 읽기",
             command=self.reread_current_source,
         )
-        self.reread_source_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.reread_source_button.pack(side=tk.RIGHT, padx=(6, 0))
         self.open_source_button = ttk.Button(
-            task_bar,
+            self.task_detail_actions,
             text="원본 보기",
             command=self.open_current_source,
         )
-        self.open_source_button.pack(side=tk.LEFT)
+        self.open_source_button.pack(side=tk.RIGHT)
 
     def _build_source_tab(self) -> None:
         ttk.Label(self.source_tab, text="인식된 원문", style="Section.TLabel").pack(anchor=tk.W)
@@ -575,50 +832,66 @@ class SsoklyApp(tk.Tk):
         ).pack(side=tk.LEFT)
 
     def _build_result_tab(self) -> None:
-        header = ttk.Frame(self.result_tab, style="Surface.TFrame")
-        header.pack(fill=tk.X)
-        title_block = ttk.Frame(header, style="Surface.TFrame")
-        title_block.pack(side=tk.LEFT)
-        ttk.Label(title_block, text="업무 실행안", style="Section.TLabel").pack(anchor=tk.W)
+        self.result_header = ttk.Frame(self.result_tab, style="Surface.TFrame")
+        self.result_header.pack(fill=tk.X)
+        self.result_title_block = ttk.Frame(
+            self.result_header,
+            style="Surface.TFrame",
+        )
+        self.result_title_block.pack(side=tk.LEFT)
         ttk.Label(
-            title_block,
+            self.result_title_block,
+            text="업무 실행안",
+            style="Section.TLabel",
+        ).pack(anchor=tk.W)
+        ttk.Label(
+            self.result_title_block,
             text="필요한 부분만 바로 복사해 일정 등록과 전달 업무에 활용하세요.",
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(4, 0))
 
-        action_bar = ttk.Frame(header, style="Toolbar.TFrame")
-        action_bar.pack(side=tk.RIGHT)
+        self.result_action_bar = ttk.Frame(
+            self.result_header,
+            style="Toolbar.TFrame",
+        )
+        self.result_action_bar.pack(side=tk.RIGHT)
         self.schedule_button = ttk.Button(
-            action_bar,
+            self.result_action_bar,
             text="일정 복사",
             command=lambda: self.copy_result_section("schedule", "일정 메모"),
         )
         self.schedule_button.pack(side=tk.LEFT, padx=(0, 6))
         self.checklist_button = ttk.Button(
-            action_bar,
+            self.result_action_bar,
             text="체크리스트 복사",
             command=lambda: self.copy_result_section("checklist", "체크리스트"),
         )
         self.checklist_button.pack(side=tk.LEFT, padx=(0, 6))
         self.message_button = ttk.Button(
-            action_bar,
+            self.result_action_bar,
             text="전달문 복사",
             command=lambda: self.copy_result_section("message", "전달 문구"),
         )
         self.message_button.pack(side=tk.LEFT, padx=(0, 6))
         self.follow_up_button = ttk.Button(
-            action_bar,
+            self.result_action_bar,
             text="첨부 후속 복사",
             command=lambda: self.copy_result_section("follow_up", "첨부파일별 후속 실행"),
         )
         self.follow_up_button.pack(side=tk.LEFT, padx=(0, 6))
         self.copy_button = ttk.Button(
-            action_bar,
+            self.result_action_bar,
             text="전체 복사",
             style="Secondary.TButton",
             command=self.copy_result,
         )
         self.copy_button.pack(side=tk.LEFT)
+        self.partial_copy_buttons = [
+            self.schedule_button,
+            self.checklist_button,
+            self.message_button,
+            self.follow_up_button,
+        ]
 
         self.result_text = scrolledtext.ScrolledText(
             self.result_tab,
@@ -1628,6 +1901,12 @@ class SsoklyApp(tk.Tk):
         self._closing = True
         self._cancel_autosave()
         self._cancel_task_search_refresh()
+        if not self._flush_window_settings():
+            messagebox.showwarning(
+                "창 설정 저장 오류",
+                "컴팩트·항상 위·투명도 설정을 저장하지 못했습니다.\n"
+                "업무 원문과 실행안에는 영향이 없습니다.",
+            )
         self._active_operation_id = None
         self._active_operation_context = None
         self._active_operation_kind = None

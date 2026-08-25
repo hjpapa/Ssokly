@@ -43,6 +43,8 @@
 - OpenAI SDK 지연 로딩과 빠른 무손실 PNG 처리
 - OCR·문서 읽기·분석의 전용 진행 표시와 경과 시간 안내
 - 큰 텍스트/HWPX 문서를 백그라운드에서 읽어 UI 멈춤 방지
+- 핵심 작업면만 남기는 컴팩트 위젯 모드
+- 항상 위 토글과 92~100% 투명도 조절
 
 ## 새 구조
 
@@ -66,6 +68,9 @@ services/task_store.py
   - SQLite에 업무 원문, 실행안, 상태, 출처 정보 저장
   - 캡처 원본은 앱 데이터 폴더에 영구 복사
   - 제목/원문/실행안 검색과 진행중/완료 필터
+
+services/settings_store.py
+  - 컴팩트 모드, 항상 위, 투명도를 로컬 JSON에 원자적으로 저장
 
 services/ocr_service.py
   - PIL 이미지를 PNG data URL로 변환
@@ -148,9 +153,12 @@ cd Ssokly
 
 이미지, PDF, DOC/DOCX, RTF, ODT, PPT/PPTX, XLS/XLSX, TXT, Markdown, CSV, TSV, HWPX 첨부 파일은 `첨부 파일 열기`로 읽을 수 있습니다. 구형 HWP 파일은 한글에서 HWPX 또는 PDF로 저장한 뒤 열거나 필요한 영역을 캡처해 주세요.
 
+창 위쪽의 `컴팩트`를 누르면 업무 보관함과 상세 동작을 접고 캡처·입력·분석·저장에 필요한 작업면만 남깁니다. 컴팩트 상태의 `전체 화면`으로 원래 창 크기와 구성을 복원할 수 있습니다. `항상 위`와 `투명도` 슬라이더는 컴팩트 모드와 독립적으로 사용할 수 있으며 다음 실행에도 유지됩니다. 창 테두리와 Windows 제목 표시줄은 모든 모드에서 유지됩니다.
+
 ## 로컬 데이터
 
 - 업무 DB: `%LOCALAPPDATA%\Ssokly\ssokly.db`
+- 창 설정: `%LOCALAPPDATA%\Ssokly\settings.json`
 - 저장 업무의 캡처 사본: `%LOCALAPPDATA%\Ssokly\captures`
 - 최근 임시 캡처 8개: Windows 임시 폴더의 `Ssokly\captures`
 - 첨부 문서는 앱 데이터 폴더로 복사하지 않고 원래 파일 경로만 기록합니다.
@@ -189,6 +197,5 @@ Ssokly의 OCR 및 분석 기능을 사용하면 공문 이미지와 텍스트가
 - 학부모 안내문 변환
 - 업무 기한, 우선순위, 태그 관리
 - 대량 업무 목록 페이지 처리와 첫 화면 추가 최적화
-- 컴팩트 위젯 모드, 항상 위, 투명도 설정
 - 사용자 역할별 분석: 담임, 정보부장, 학년부장, 연구부장
 - PyInstaller를 이용한 exe 패키징
