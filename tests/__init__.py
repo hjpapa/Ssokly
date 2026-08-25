@@ -1,0 +1,1 @@
+"""Ssokly test suite."""

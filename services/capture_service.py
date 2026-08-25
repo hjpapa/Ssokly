@@ -112,9 +112,15 @@ def capture_region(region: Tuple[int, int, int, int]) -> Image.Image:
         "height": y2 - y1,
     }
 
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         screenshot = sct.grab(monitor)
-        return Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+        return Image.frombytes(
+            "RGB",
+            screenshot.size,
+            screenshot.raw,
+            "raw",
+            "BGRX",
+        )
 
 
 def capture_selected_region(parent: tk.Tk) -> Optional[Image.Image]:
