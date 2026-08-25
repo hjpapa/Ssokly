@@ -13,7 +13,11 @@ from PIL import Image, ImageTk
 
 from services.ai_service import analyze_document_task
 from services.capture_service import capture_selected_region
-from services.capture_store import CaptureRecord, CaptureStore
+from services.capture_store import (
+    CaptureConflictError,
+    CaptureRecord,
+    CaptureStore,
+)
 from services.document_service import (
     attachment_kind,
     mime_type_for,
@@ -51,6 +55,8 @@ CORAL_SOFT = "#fbd6d1"
 SIDEBAR_TEXT = "#effaf7"
 AUTOSAVE_DELAY_MS = 700
 TASK_SEARCH_DELAY_MS = 200
+CAPTURE_INBOX_PAGE_LIMIT = 250
+MAX_BATCH_OCR_ITEMS = 20
 OPERATION_PROGRESS_INTERVAL_MS = 250
 WINDOW_SETTINGS_SAVE_DELAY_MS = 250
 DEFAULT_OUTPUT_MODE = "통합 실행안"
@@ -60,9 +66,11 @@ COMPACT_WINDOW_SIZE = (680, 720)
 COMPACT_WINDOW_MIN_SIZE = (620, 560)
 OPERATION_LABELS = {
     "ocr": "이미지 OCR",
+    "capture_batch": "캡처 정밀 OCR",
     "document": "문서 읽기",
     "analysis": "업무 분석",
 }
+OCR_REVIEW_MARKERS = ("⟦불확실", "⟦판독불가⟧")
 
 
 class SsoklyApp(tk.Tk):
@@ -104,6 +112,7 @@ class SsoklyApp(tk.Tk):
         self.current_source_name = ""
         self.current_source_path: Optional[Path] = None
         self.current_capture_path: Optional[Path] = None
+        self.current_capture_ids: list[str] = []
         self.current_output_mode = DEFAULT_OUTPUT_MODE
         self.current_context_id = uuid4().hex
         self.current_dirty = False
@@ -118,6 +127,7 @@ class SsoklyApp(tk.Tk):
         self._active_operation_context: Optional[str] = None
         self._active_operation_kind: Optional[str] = None
         self._active_operation_revisions: Optional[tuple[int, int]] = None
+        self._active_operation_cancel_event: Optional[threading.Event] = None
         self._operation_started_at: Optional[float] = None
         self._operation_progress_after_id: Optional[str] = None
         self._closing = False
@@ -127,10 +137,36 @@ class SsoklyApp(tk.Tk):
         self._held_worker_results: list[tuple[Any, ...]] = []
 
         self.recent_window: Optional[tk.Toplevel] = None
-        self.recent_list: Optional[tk.Listbox] = None
+        self.capture_inbox_tree: Optional[ttk.Treeview] = None
+        self.capture_inbox_filter_var = tk.StringVar(value="unclassified")
+        self.capture_search_var = tk.StringVar(value="")
+        self.capture_inbox_filter_buttons: dict[str, tk.Button] = {}
+        self.capture_search_entry: Optional[tk.Entry] = None
+        self._capture_search_after_id: Optional[str] = None
+        self.capture_thumbnail_photos: dict[str, ImageTk.PhotoImage] = {}
+        self._capture_thumbnail_generation = 0
+        self._capture_thumbnail_after_id: Optional[str] = None
         self.preview_label: Optional[tk.Label] = None
+        self.capture_preview_text: Optional[scrolledtext.ScrolledText] = None
+        self.capture_selected_count_var: Optional[tk.StringVar] = None
+        self.capture_review_window: Optional[tk.Toplevel] = None
+        self.capture_review_text: Optional[scrolledtext.ScrolledText] = None
+        self.capture_review_raw_text: Optional[scrolledtext.ScrolledText] = None
+        self.capture_review_id: Optional[str] = None
+        self.capture_review_initial_text = ""
+        self.capture_review_dirty = False
+        self.capture_review_expected_updated_at: Optional[datetime] = None
+        self.capture_review_workspace_context: Optional[str] = None
+        self.capture_review_workspace_revision: Optional[int] = None
+        self.capture_review_workspace_text = ""
+        self.capture_review_workspace_format: Optional[str] = None
+        self.capture_review_workspace_records: list[CaptureRecord] = []
         self.reopen_button: Optional[tk.Button] = None
+        self.add_capture_button: Optional[tk.Button] = None
+        self.review_capture_button: Optional[tk.Button] = None
+        self.reread_capture_button: Optional[tk.Button] = None
         self.delete_capture_button: Optional[tk.Button] = None
+        self.restore_capture_button: Optional[tk.Button] = None
         self.open_capture_folder_button: Optional[tk.Button] = None
 
         self._build_styles()
@@ -201,6 +237,28 @@ class SsoklyApp(tk.Tk):
             font=("Malgun Gothic", 8, "bold"),
         )
         style.map("Task.Treeview.Heading", background=[("active", TEAL_DARK)])
+        style.configure(
+            "Capture.Treeview",
+            background=TEAL_DEEP,
+            fieldbackground=TEAL_DEEP,
+            foreground=SIDEBAR_TEXT,
+            borderwidth=0,
+            rowheight=58,
+            font=("Malgun Gothic", 9),
+        )
+        style.map(
+            "Capture.Treeview",
+            background=[("selected", CORAL)],
+            foreground=[("selected", "#ffffff")],
+        )
+        style.configure(
+            "Capture.Treeview.Heading",
+            background=TEAL_DARK,
+            foreground=CORAL_SOFT,
+            relief=tk.FLAT,
+            font=("Malgun Gothic", 8, "bold"),
+        )
+        style.map("Capture.Treeview.Heading", background=[("active", TEAL_DARK)])
         style.configure("Notebook.TNotebook", background=MINT_CANVAS, borderwidth=0)
         style.configure(
             "Notebook.TNotebook.Tab",
@@ -653,7 +711,7 @@ class SsoklyApp(tk.Tk):
 
         self.header_button_bar = ttk.Frame(self.header_frame, style="App.TFrame")
         self.header_button_bar.pack(side=tk.RIGHT, anchor=tk.NE)
-        self.recent_count_var = tk.StringVar(value="최근 캡처 0/8")
+        self.recent_count_var = tk.StringVar(value="캡처함 · 미분류 0")
         self.recent_button = ttk.Button(
             self.header_button_bar,
             textvariable=self.recent_count_var,
@@ -756,7 +814,7 @@ class SsoklyApp(tk.Tk):
         self.current_status_button.pack(side=tk.RIGHT, padx=(6, 0))
         self.reread_source_button = ttk.Button(
             self.task_detail_actions,
-            text="원문 다시 읽기",
+            text="정밀 재인식",
             command=self.reread_current_source,
         )
         self.reread_source_button.pack(side=tk.RIGHT, padx=(6, 0))
@@ -944,7 +1002,10 @@ class SsoklyApp(tk.Tk):
         try:
             record = self.capture_store.save(image)
         except Exception as exc:
-            messagebox.showerror("캡처 저장 오류", f"캡처 이미지를 임시 저장하지 못했습니다.\n\n{exc}")
+            messagebox.showerror(
+                "캡처 저장 오류",
+                f"캡처 이미지를 보관함에 저장하지 못했습니다.\n\n{exc}",
+            )
             self.status_var.set("캡처 이미지를 저장하지 못했습니다.")
             return
 
@@ -953,8 +1014,9 @@ class SsoklyApp(tk.Tk):
             source_kind="capture",
             source_name="화면 캡처",
             capture_path=record.path,
+            capture_ids=[record.id],
         )
-        self._run_ocr(image)
+        self._run_ocr(image, capture_id=record.id)
 
     def load_attachment_file(self) -> None:
         if self._active_operation_id is not None:
@@ -1030,8 +1092,9 @@ class SsoklyApp(tk.Tk):
                 source_kind="file",
                 source_name=path.name,
                 source_path=path,
+                capture_ids=[record.id],
             )
-            self._run_ocr(image)
+            self._run_ocr(image, capture_id=record.id)
         except Exception as exc:
             messagebox.showerror(
                 "첨부 파일 오류",
@@ -1089,14 +1152,35 @@ class SsoklyApp(tk.Tk):
         self.notebook.select(self.source_tab)
         self.status_var.set(f"{filename} 문서를 읽었습니다. 원문을 검수해 주세요.")
 
-    def _run_ocr(self, image: Image.Image) -> None:
-        self.status_var.set("OpenAI 이미지 OCR로 원문을 읽는 중입니다...")
+    def _run_ocr(
+        self,
+        image: Image.Image,
+        *,
+        capture_id: Optional[str] = None,
+        apply_mode: str = "replace",
+    ) -> None:
+        self.status_var.set("OpenAI 정밀 OCR로 원문을 읽는 중입니다...")
         self._start_worker_operation(
             "ocr",
-            lambda: extract_text_from_image(image, raise_errors=True),
+            lambda: extract_text_from_image(
+                image,
+                raise_errors=True,
+                detail="high",
+            ),
+            {
+                "capture_id": capture_id,
+                "apply_mode": apply_mode,
+                "ocr_profile": "high-exact-v1",
+            },
         )
 
-    def _finish_ocr(self, text: str) -> None:
+    def _finish_ocr(self, text: str, apply_mode: str = "replace") -> None:
+        if apply_mode == "metadata_only":
+            self.status_var.set("캡처함의 정밀 OCR 결과를 갱신했습니다.")
+            return
+        if apply_mode == "review" and self.ocr_text.get("1.0", "end-1c").strip():
+            self._show_ocr_comparison(text)
+            return
         self._replace_ocr_text(text, track_change=True)
         self._refresh_auto_title()
         self.notebook.select(self.source_tab)
@@ -1105,6 +1189,107 @@ class SsoklyApp(tk.Tk):
         else:
             self.status_var.set("OCR 결과가 비어 있습니다. 이미지 품질을 확인해 주세요.")
             messagebox.showinfo("OCR 결과 없음", "이미지에서 텍스트를 찾지 못했습니다.")
+
+    def _show_ocr_comparison(
+        self,
+        candidate_text: str,
+        *,
+        title: str = "정밀 OCR 결과 비교",
+        description: str = (
+            "기존 검수본은 자동으로 바꾸지 않습니다. 원본과 비교한 뒤 적용하세요."
+        ),
+        candidate_label: str = "새 정밀 OCR",
+        apply_button_text: str = "새 OCR 적용",
+        applied_status: str = "확인한 정밀 OCR 결과를 원문에 적용했습니다.",
+    ) -> None:
+        context_id = self.current_context_id
+        source_revision = self._source_revision
+        window = tk.Toplevel(self)
+        window.title(f"Ssokly - {title}")
+        window.geometry("1120x680")
+        window.minsize(900, 560)
+        window.configure(bg=MINT_CANVAS)
+        window.transient(self)
+
+        header = tk.Frame(window, bg=MINT_CANVAS)
+        header.pack(fill=tk.X, padx=18, pady=(16, 10))
+        tk.Label(
+            header,
+            text=title,
+            bg=MINT_CANVAS,
+            fg=TEAL_DEEP,
+            font=("Malgun Gothic", 16, "bold"),
+        ).pack(anchor=tk.W)
+        tk.Label(
+            header,
+            text=description,
+            bg=MINT_CANVAS,
+            fg=TEAL_MUTED,
+            font=("Malgun Gothic", 9),
+        ).pack(anchor=tk.W, pady=(4, 0))
+
+        content = tk.Frame(window, bg=MINT_CANVAS)
+        content.pack(fill=tk.BOTH, expand=True, padx=18)
+        for column, label, value in (
+            (0, "현재 검수 원문", self.ocr_text.get("1.0", "end-1c")),
+            (1, candidate_label, candidate_text),
+        ):
+            panel = tk.Frame(content, bg=MINT_SURFACE)
+            panel.grid(row=0, column=column, sticky="nsew", padx=(0, 6) if column == 0 else (6, 0))
+            tk.Label(
+                panel,
+                text=label,
+                bg=MINT_SURFACE,
+                fg=TEAL_DEEP,
+                font=("Malgun Gothic", 10, "bold"),
+            ).pack(anchor=tk.W, padx=12, pady=(10, 6))
+            editor = scrolledtext.ScrolledText(
+                panel,
+                wrap=tk.WORD,
+                font=("Malgun Gothic", 10),
+                bg=MINT_TEXT_AREA,
+                fg=TEAL_INK,
+                relief=tk.FLAT,
+                padx=10,
+                pady=10,
+            )
+            editor.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+            editor.insert("1.0", value)
+            editor.configure(state=tk.DISABLED)
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_columnconfigure(1, weight=1)
+        content.grid_rowconfigure(0, weight=1)
+
+        actions = tk.Frame(window, bg=MINT_CANVAS)
+        actions.pack(fill=tk.X, padx=18, pady=14)
+
+        def apply_candidate() -> None:
+            if (
+                self.current_context_id != context_id
+                or self._source_revision != source_revision
+            ):
+                messagebox.showinfo(
+                    f"{title} 미적용",
+                    "비교 창을 연 뒤 업무 원문이 변경되어 후보 원문을 적용하지 않았습니다.",
+                    parent=window,
+                )
+                return
+            self._replace_ocr_text(candidate_text, track_change=True)
+            self._refresh_auto_title()
+            self.notebook.select(self.source_tab)
+            self.status_var.set(applied_status)
+            window.destroy()
+
+        ttk.Button(
+            actions,
+            text=apply_button_text,
+            style="Primary.TButton",
+            command=apply_candidate,
+        ).pack(side=tk.RIGHT)
+        ttk.Button(actions, text="기존 원문 유지", command=window.destroy).pack(
+            side=tk.RIGHT,
+            padx=(0, 8),
+        )
 
     def focus_ocr_text(self) -> None:
         if self._active_operation_id is not None:
@@ -1130,6 +1315,19 @@ class SsoklyApp(tk.Tk):
             self.ocr_text.focus_set()
             return
 
+        uncertainty_count = sum(text.count(marker) for marker in OCR_REVIEW_MARKERS)
+        if uncertainty_count and not messagebox.askyesno(
+            "OCR 검수 필요",
+            f"원문에 판독이 불확실한 표시가 {uncertainty_count}개 남아 있습니다.\n"
+            "날짜·숫자·대상·첨부파일명을 원본과 대조한 뒤 분석하는 것이 안전합니다.\n\n"
+            "현재 원문으로 계속 분석할까요?",
+            icon=messagebox.WARNING,
+            default=messagebox.NO,
+        ):
+            self.notebook.select(self.source_tab)
+            self.status_var.set("불확실한 OCR 표시를 먼저 검수해 주세요.")
+            return
+
         self.status_var.set(f"{output_mode}을 만드는 중입니다...")
         self._start_worker_operation(
             "analysis",
@@ -1150,8 +1348,10 @@ class SsoklyApp(tk.Tk):
     def _start_worker_operation(
         self,
         kind: str,
-        work: Callable[[], str],
+        work: Callable[[], Any],
         metadata: Optional[dict[str, Any]] = None,
+        *,
+        cancel_event: Optional[threading.Event] = None,
     ) -> None:
         if self._active_operation_id is not None:
             raise RuntimeError("another operation is already running")
@@ -1161,6 +1361,7 @@ class SsoklyApp(tk.Tk):
         self._active_operation_id = operation_id
         self._active_operation_context = context_id
         self._active_operation_kind = kind
+        self._active_operation_cancel_event = cancel_event or threading.Event()
         self._active_operation_revisions = (
             self._source_revision,
             self._result_revision,
@@ -1188,7 +1389,192 @@ class SsoklyApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _run_capture_batch_ocr(
+        self,
+        records: list[CaptureRecord],
+        *,
+        apply_mode: str = "metadata_only",
+    ) -> None:
+        targets = [(record.id, record.path) for record in records]
+        if not targets:
+            return
+        if len(targets) > MAX_BATCH_OCR_ITEMS:
+            messagebox.showinfo(
+                "정밀 OCR 선택 제한",
+                f"한 번에 최대 {MAX_BATCH_OCR_ITEMS}개까지 정밀 OCR할 수 있습니다.\n"
+                "비용과 대기 시간을 확인하기 쉽도록 나누어 실행해 주세요.",
+            )
+            return
+        if len(targets) > 1 and not messagebox.askyesno(
+            "여러 캡처 정밀 OCR",
+            f"캡처 {len(targets)}개를 한 장씩 읽으며 OpenAI API를 {len(targets)}회 호출합니다.\n"
+            "완료까지 시간이 걸리고 API 사용 비용이 발생할 수 있습니다. 계속할까요?",
+            icon=messagebox.WARNING,
+            default=messagebox.NO,
+        ):
+            return
+        profile = "high-exact-v1"
+        cancel_event = threading.Event()
+
+        def read_each_original() -> list[dict[str, Any]]:
+            results: list[dict[str, Any]] = []
+            for capture_id, path in targets:
+                if cancel_event.is_set():
+                    break
+                try:
+                    with Image.open(path) as source_image:
+                        image = source_image.copy()
+                    text = extract_text_from_image(
+                        image,
+                        detail="high",
+                        raise_errors=True,
+                    )
+                    results.append(
+                        {
+                            "capture_id": capture_id,
+                            "succeeded": True,
+                            "text": text,
+                        }
+                    )
+                except Exception as exc:
+                    error = str(exc) or "OCR 중 알 수 없는 오류가 발생했습니다."
+                    results.append(
+                        {
+                            "capture_id": capture_id,
+                            "succeeded": False,
+                            "error": error,
+                        }
+                    )
+            return results
+
+        self.status_var.set(
+            f"캡처 {len(targets)}개를 원본 해상도로 한 장씩 정밀 OCR하는 중입니다..."
+        )
+        self._start_worker_operation(
+            "capture_batch",
+            read_each_original,
+            {
+                "ocr_profile": profile,
+                "capture_count": len(targets),
+                "apply_mode": apply_mode,
+            },
+            cancel_event=cancel_event,
+        )
+
+    def _persist_single_ocr_result(
+        self,
+        capture_id: Optional[str],
+        *,
+        text: Optional[str] = None,
+        error: Optional[str] = None,
+        profile: str = "",
+    ) -> Optional[str]:
+        if not capture_id:
+            return None
+        try:
+            if error is not None:
+                self.capture_store.set_ocr_failure(
+                    capture_id,
+                    error,
+                    profile=profile,
+                )
+            else:
+                self.capture_store.update_ocr(
+                    capture_id,
+                    text or "",
+                    profile=profile,
+                )
+        except Exception as exc:
+            return str(exc)
+        return None
+
+    def _finish_capture_batch_ocr(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        profile: str,
+        apply_mode: str = "metadata_only",
+    ) -> None:
+        succeeded_count = 0
+        failed_count = 0
+        storage_errors: list[str] = []
+        for item in results:
+            capture_id = str(item.get("capture_id", ""))
+            if item.get("succeeded"):
+                storage_error = self._persist_single_ocr_result(
+                    capture_id,
+                    text=str(item.get("text", "")),
+                    profile=profile,
+                )
+                succeeded_count += 1
+            else:
+                storage_error = self._persist_single_ocr_result(
+                    capture_id,
+                    error=str(item.get("error", "OCR에 실패했습니다.")),
+                    profile=profile,
+                )
+                failed_count += 1
+            if storage_error:
+                storage_errors.append(str(storage_error))
+
+        self._refresh_recent_captures()
+        if storage_errors:
+            self.status_var.set(
+                "OCR 결과는 도착했지만 일부 캡처의 메타데이터를 저장하지 못했습니다."
+            )
+            messagebox.showerror(
+                "캡처 OCR 저장 오류",
+                "캡처함에 일부 OCR 결과를 기록하지 못했습니다. 원본 이미지는 유지됩니다.\n\n"
+                + "\n".join(storage_errors[:3]),
+            )
+            return
+        if failed_count:
+            self.status_var.set(
+                f"정밀 OCR 완료: 성공 {succeeded_count}개, 실패 {failed_count}개. 기존 성공 원문은 보존했습니다."
+            )
+            messagebox.showinfo(
+                "캡처 정밀 OCR 완료",
+                f"성공 {succeeded_count}개 / 실패 {failed_count}개\n\n"
+                "실패한 캡처도 이전 OCR 원문은 지우지 않았습니다. 이미지 품질을 확인해 다시 시도하세요.",
+            )
+        else:
+            self.status_var.set(
+                f"캡처 {succeeded_count}개의 정밀 OCR 원문을 갱신했습니다."
+            )
+            if apply_mode == "review_bundle":
+                refreshed_records: list[CaptureRecord] = []
+                try:
+                    for item in results:
+                        record = self.capture_store.get(
+                            str(item.get("capture_id", ""))
+                        )
+                        if record is not None:
+                            refreshed_records.append(record)
+                except Exception as exc:
+                    self.status_var.set(
+                        "정밀 OCR은 저장했지만 비교용 묶음을 다시 불러오지 못했습니다."
+                    )
+                    messagebox.showwarning(
+                        "OCR 비교 준비 오류",
+                        "캡처별 OCR 원문은 보관함에 저장됐지만 비교 창을 열지 못했습니다.\n\n"
+                        f"{exc}",
+                    )
+                    return
+                if len(refreshed_records) == len(results):
+                    self._show_ocr_comparison(
+                        self._capture_bundle_text(
+                            refreshed_records,
+                            prefer_verified=False,
+                        )
+                    )
+
     def _drain_worker_results(self) -> None:
+        if self._worker_poll_after_id is not None:
+            try:
+                self.after_cancel(self._worker_poll_after_id)
+            except tk.TclError:
+                pass
+            self._worker_poll_after_id = None
         if self._closing:
             return
 
@@ -1219,10 +1605,20 @@ class SsoklyApp(tk.Tk):
                 self._active_operation_context = None
                 self._active_operation_kind = None
                 self._active_operation_revisions = None
+                self._active_operation_cancel_event = None
                 self._hide_operation_progress()
                 self._render_workspace_state()
 
                 if not succeeded:
+                    if kind == "ocr":
+                        storage_error = self._persist_single_ocr_result(
+                            metadata.get("capture_id"),
+                            error=str(payload),
+                            profile=metadata.get("ocr_profile", ""),
+                        )
+                        self._refresh_recent_captures()
+                        if storage_error:
+                            payload = f"{payload}\n\n캡처함 기록 오류: {storage_error}"
                     if kind == "analysis":
                         title = "업무 분석 오류"
                     elif kind == "document":
@@ -1234,6 +1630,28 @@ class SsoklyApp(tk.Tk):
                     )
                     messagebox.showerror(title, payload)
                     continue
+
+                if kind == "capture_batch":
+                    self._finish_capture_batch_ocr(
+                        payload,
+                        profile=metadata.get("ocr_profile", ""),
+                        apply_mode=metadata.get("apply_mode", "metadata_only"),
+                    )
+                    continue
+
+                if kind == "ocr":
+                    storage_error = self._persist_single_ocr_result(
+                        metadata.get("capture_id"),
+                        text=str(payload),
+                        profile=metadata.get("ocr_profile", ""),
+                    )
+                    self._refresh_recent_captures()
+                    if storage_error:
+                        messagebox.showwarning(
+                            "캡처 OCR 저장 오류",
+                            "OCR 원문은 화면에 적용하지만 캡처함에는 기록하지 못했습니다.\n\n"
+                            f"{storage_error}",
+                        )
 
                 source_changed = (
                     operation_revisions is not None
@@ -1262,12 +1680,18 @@ class SsoklyApp(tk.Tk):
                         metadata.get("output_mode", DEFAULT_OUTPUT_MODE),
                     )
                 else:
-                    self._finish_ocr(payload)
+                    self._finish_ocr(
+                        payload,
+                        metadata.get("apply_mode", "replace"),
+                    )
         except queue.Empty:
             pass
-
-        if not self._closing:
-            self._worker_poll_after_id = self.after(50, self._drain_worker_results)
+        finally:
+            if not self._closing:
+                self._worker_poll_after_id = self.after(
+                    50,
+                    self._drain_worker_results,
+                )
 
     def _show_operation_progress(self, operation_id: str, kind: str) -> None:
         self._hide_operation_progress()
@@ -1341,9 +1765,9 @@ class SsoklyApp(tk.Tk):
             return
 
         window = tk.Toplevel(self)
-        window.title("Ssokly - 최근 캡처")
-        window.geometry("760x520")
-        window.minsize(650, 440)
+        window.title("Ssokly - 캡처 보관함")
+        window.geometry("1040x680")
+        window.minsize(860, 560)
         window.configure(bg=MINT_CANVAS)
         window.transient(self)
         window.protocol("WM_DELETE_WINDOW", self._close_recent_window)
@@ -1358,37 +1782,98 @@ class SsoklyApp(tk.Tk):
         header.pack(fill=tk.X, padx=18, pady=(16, 10))
         tk.Label(
             header,
-            text="최근 캡처",
+            text="캡처 보관함",
             bg=MINT_CANVAS,
             fg=TEAL_DEEP,
             font=("Malgun Gothic", 16, "bold"),
         ).pack(side=tk.LEFT)
         tk.Label(
             header,
-            text="임시 캡처는 최신 8개까지 유지됩니다.",
+            text="무손실 원본과 OCR 전문을 장별로 보존합니다.",
             bg=MINT_CANVAS,
             fg=TEAL_MUTED,
             font=("Malgun Gothic", 9),
         ).pack(side=tk.LEFT, padx=(12, 0), pady=(5, 0))
 
-        content = tk.Frame(window, bg=MINT_CANVAS)
-        content.pack(fill=tk.BOTH, expand=True, padx=18)
-        self.recent_list = tk.Listbox(
-            content,
-            width=28,
-            bg=TEAL_DEEP,
-            fg=SIDEBAR_TEXT,
-            selectbackground=CORAL,
-            selectforeground="#ffffff",
-            activestyle="none",
-            borderwidth=0,
-            highlightthickness=0,
+        filters = tk.Frame(window, bg=MINT_CANVAS)
+        filters.pack(fill=tk.X, padx=18, pady=(0, 10))
+        self.capture_inbox_filter_buttons = {}
+        for label, value in (
+            ("미분류", "unclassified"),
+            ("업무 연결", "linked"),
+            ("전체", "all"),
+            ("휴지통", "trash"),
+        ):
+            button = tk.Button(
+                filters,
+                text=label,
+                command=lambda selected=value: self._set_capture_inbox_filter(selected),
+                relief=tk.FLAT,
+                font=("Malgun Gothic", 9, "bold"),
+                padx=14,
+                pady=6,
+            )
+            button.pack(side=tk.LEFT, padx=(0, 6))
+            self.capture_inbox_filter_buttons[value] = button
+        self.capture_selected_count_var = tk.StringVar(value="0개 선택")
+        tk.Label(
+            filters,
+            textvariable=self.capture_selected_count_var,
+            bg=MINT_CANVAS,
+            fg=TEAL_MUTED,
+            font=("Malgun Gothic", 9),
+        ).pack(side=tk.RIGHT)
+        self.capture_search_entry = tk.Entry(
+            filters,
+            textvariable=self.capture_search_var,
+            width=24,
+            relief=tk.FLAT,
+            bg=MINT_SURFACE,
+            fg=TEAL_INK,
+            insertbackground=TEAL_PRIMARY_ACTIVE,
             font=("Malgun Gothic", 9),
         )
-        self.recent_list.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 12))
-        self.recent_list.bind("<<ListboxSelect>>", self._on_recent_capture_selected)
+        self.capture_search_entry.pack(side=tk.RIGHT, padx=(8, 12), ipady=6)
+        tk.Label(
+            filters,
+            text="캡처 검색",
+            bg=MINT_CANVAS,
+            fg=TEAL_MUTED,
+            font=("Malgun Gothic", 9),
+        ).pack(side=tk.RIGHT)
 
-        preview_frame = tk.Frame(content, bg=TEAL_DEEP)
+        content = tk.Frame(window, bg=MINT_CANVAS)
+        content.pack(fill=tk.BOTH, expand=True, padx=18)
+        tree_frame = tk.Frame(content, bg=TEAL_DEEP, width=500)
+        tree_frame.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 12))
+        tree_frame.pack_propagate(False)
+        self.capture_inbox_tree = ttk.Treeview(
+            tree_frame,
+            columns=("captured", "state"),
+            show="tree headings",
+            selectmode="extended",
+            style="Capture.Treeview",
+        )
+        self.capture_inbox_tree.heading("#0", text="OCR 첫 줄")
+        self.capture_inbox_tree.heading("captured", text="캡처 시각")
+        self.capture_inbox_tree.heading("state", text="상태")
+        self.capture_inbox_tree.column("#0", width=300, minwidth=220)
+        self.capture_inbox_tree.column("captured", width=105, anchor=tk.CENTER)
+        self.capture_inbox_tree.column("state", width=80, anchor=tk.CENTER)
+        tree_scrollbar = ttk.Scrollbar(
+            tree_frame,
+            orient=tk.VERTICAL,
+            command=self.capture_inbox_tree.yview,
+        )
+        self.capture_inbox_tree.configure(yscrollcommand=tree_scrollbar.set)
+        tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.capture_inbox_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.capture_inbox_tree.bind(
+            "<<TreeviewSelect>>",
+            self._on_recent_capture_selected,
+        )
+
+        preview_frame = tk.Frame(content, bg=MINT_SURFACE)
         preview_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.preview_label = tk.Label(
             preview_frame,
@@ -1397,15 +1882,36 @@ class SsoklyApp(tk.Tk):
             fg=CORAL_SOFT,
             font=("Malgun Gothic", 9),
             justify=tk.CENTER,
+            height=13,
         )
-        self.preview_label.pack(fill=tk.BOTH, expand=True)
+        self.preview_label.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+        tk.Label(
+            preview_frame,
+            text="업무에 사용할 원문",
+            bg=MINT_SURFACE,
+            fg=TEAL_DEEP,
+            font=("Malgun Gothic", 9, "bold"),
+        ).pack(anchor=tk.W, padx=10, pady=(8, 4))
+        self.capture_preview_text = scrolledtext.ScrolledText(
+            preview_frame,
+            wrap=tk.WORD,
+            height=9,
+            font=("Malgun Gothic", 9),
+            bg=MINT_TEXT_AREA,
+            fg=TEAL_INK,
+            relief=tk.FLAT,
+            padx=8,
+            pady=8,
+        )
+        self.capture_preview_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.capture_preview_text.configure(state=tk.DISABLED)
 
         actions = tk.Frame(window, bg=MINT_CANVAS)
         actions.pack(fill=tk.X, padx=18, pady=14)
         self.reopen_button = tk.Button(
             actions,
-            text="새 업무로 읽기",
-            command=self.reopen_recent_capture,
+            text="새 업무로 묶기",
+            command=self.bundle_selected_captures,
             bg=TEAL_PRIMARY,
             fg="#ffffff",
             activebackground=TEAL_PRIMARY_ACTIVE,
@@ -1416,10 +1922,49 @@ class SsoklyApp(tk.Tk):
             pady=8,
         )
         self.reopen_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.add_capture_button = tk.Button(
+            actions,
+            text="현재 업무에 추가",
+            command=self.add_selected_captures_to_current_task,
+            bg=MINT_PANEL,
+            fg=TEAL_DEEP,
+            activebackground="#ffffff",
+            relief=tk.FLAT,
+            font=("Malgun Gothic", 9, "bold"),
+            padx=12,
+            pady=8,
+        )
+        self.add_capture_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.review_capture_button = tk.Button(
+            actions,
+            text="원문 검수",
+            command=self.review_selected_capture,
+            bg=MINT_PANEL,
+            fg=TEAL_DEEP,
+            activebackground="#ffffff",
+            relief=tk.FLAT,
+            font=("Malgun Gothic", 9, "bold"),
+            padx=12,
+            pady=8,
+        )
+        self.review_capture_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.reread_capture_button = tk.Button(
+            actions,
+            text="정밀 OCR",
+            command=self.reread_selected_captures,
+            bg=CORAL_SOFT,
+            fg=TEAL_DEEP,
+            activebackground=CORAL,
+            relief=tk.FLAT,
+            font=("Malgun Gothic", 9),
+            padx=12,
+            pady=8,
+        )
+        self.reread_capture_button.pack(side=tk.LEFT, padx=(0, 6))
         self.delete_capture_button = tk.Button(
             actions,
-            text="임시 캡처 삭제",
-            command=self.delete_recent_capture,
+            text="휴지통으로",
+            command=self.trash_selected_captures,
             bg=CORAL,
             fg="#ffffff",
             activebackground=CORAL_ACTIVE,
@@ -1430,9 +1975,21 @@ class SsoklyApp(tk.Tk):
             pady=8,
         )
         self.delete_capture_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.restore_capture_button = tk.Button(
+            actions,
+            text="복원",
+            command=self.restore_selected_captures,
+            bg=MINT_PANEL,
+            fg=TEAL_DEEP,
+            activebackground="#ffffff",
+            relief=tk.FLAT,
+            font=("Malgun Gothic", 9),
+            padx=12,
+            pady=8,
+        )
         self.open_capture_folder_button = tk.Button(
             actions,
-            text="임시 폴더 열기",
+            text="원본 폴더 열기",
             command=self.open_capture_folder,
             bg=MINT_PANEL,
             fg=TEAL_DEEP,
@@ -1448,144 +2005,1023 @@ class SsoklyApp(tk.Tk):
         self._refresh_recent_captures()
         self._render_workspace_state()
 
-    def _close_recent_window(self) -> None:
+    def _close_recent_window(self) -> bool:
+        if not self._close_capture_review_window():
+            return False
+        self._capture_thumbnail_generation += 1
+        self._cancel_capture_thumbnail_load()
+        self._cancel_capture_search_refresh()
         if self.recent_window is not None and self.recent_window.winfo_exists():
             self.recent_window.destroy()
         self.recent_window = None
-        self.recent_list = None
+        self.capture_inbox_tree = None
+        self.capture_search_entry = None
         self.preview_label = None
         self.preview_photo = None
+        self.capture_preview_text = None
+        self.capture_selected_count_var = None
+        self.capture_thumbnail_photos.clear()
         self.reopen_button = None
+        self.add_capture_button = None
+        self.review_capture_button = None
+        self.reread_capture_button = None
         self.delete_capture_button = None
+        self.restore_capture_button = None
         self.open_capture_folder_button = None
+        return True
 
     def reopen_recent_capture(self) -> None:
-        record = self._selected_capture()
-        if record is None:
-            messagebox.showinfo("최근 캡처", "새 업무로 읽을 캡처 이미지를 선택해 주세요.")
+        self.bundle_selected_captures()
+
+    def delete_recent_capture(self) -> None:
+        self.trash_selected_captures()
+
+    def _set_capture_inbox_filter(self, value: str) -> None:
+        if value not in {"unclassified", "linked", "all", "trash"}:
+            value = "unclassified"
+        self.capture_inbox_filter_var.set(value)
+        self._update_capture_inbox_filter_buttons()
+        self._refresh_recent_captures()
+
+    def _update_capture_inbox_filter_buttons(self) -> None:
+        selected = self.capture_inbox_filter_var.get()
+        for value, button in self.capture_inbox_filter_buttons.items():
+            active = value == selected
+            button.configure(
+                bg=CORAL if active else MINT_PANEL,
+                fg="#ffffff" if active else TEAL_DEEP,
+            )
+
+    @staticmethod
+    def _capture_ocr_preview(record: CaptureRecord) -> str:
+        for line in record.effective_text.splitlines():
+            normalized = " ".join(line.split()).strip()
+            if normalized:
+                return normalized[:70]
+        if record.ocr_status == "failed":
+            return "OCR 실패 · 다시 읽기가 필요합니다"
+        return "아직 읽지 않은 캡처"
+
+    @staticmethod
+    def _capture_state_label(record: CaptureRecord) -> str:
+        if record.trashed_at is not None:
+            return "휴지통"
+        if record.review_status == "ocr_updated":
+            return "OCR 갱신"
+        if record.is_verified:
+            return "검수 완료"
+        if record.linked_task_ids:
+            return "업무 연결"
+        if record.ocr_status == "ready":
+            return "검수 필요"
+        if record.ocr_status == "failed":
+            return "읽기 실패"
+        return "읽지 않음"
+
+    def review_selected_capture(self) -> None:
+        records = self._selected_captures()
+        if len(records) != 1:
+            messagebox.showinfo(
+                "원문 검수",
+                "원본과 정확히 대조할 캡처 한 장만 선택해 주세요.",
+            )
             return
         if self._active_operation_id is not None:
-            messagebox.showinfo("처리 중", "현재 작업이 끝난 뒤 최근 캡처를 읽어 주세요.")
+            messagebox.showinfo("처리 중", "현재 작업이 끝난 뒤 원문을 검수해 주세요.")
             return
-
+        record = records[0]
+        if not self._require_active_captures(records):
+            return
         try:
-            image = self.capture_store.load(record)
-        except OSError as exc:
-            messagebox.showerror("최근 캡처 오류", f"캡처 이미지를 다시 열지 못했습니다.\n\n{exc}")
-            self._refresh_recent_captures()
+            review_source_image = self.capture_store.load(record)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror(
+                "원본 열기 오류",
+                "원본 이미지를 열 수 없어 검수를 시작하지 않았습니다.\n\n"
+                f"{exc}",
+            )
+            return
+        if self.capture_review_window is not None:
+            try:
+                if self.capture_review_window.winfo_exists():
+                    if self.capture_review_id == record.id:
+                        self.capture_review_window.lift()
+                        self.capture_review_window.focus_force()
+                        return
+                    if not self._close_capture_review_window():
+                        return
+            except tk.TclError:
+                self._reset_capture_review_state()
+
+        parent = self.recent_window if self.recent_window is not None else self
+        window = tk.Toplevel(parent)
+        window.title("Ssokly - OCR 원문 검수")
+        window.geometry("1180x760")
+        window.minsize(940, 620)
+        window.configure(bg=MINT_CANVAS)
+        window.transient(parent)
+        window.protocol("WM_DELETE_WINDOW", self._close_capture_review_window)
+        if APP_ICON_PATH.exists():
+            try:
+                window.iconphoto(True, self.window_icon)
+            except (AttributeError, tk.TclError):
+                pass
+
+        self.capture_review_window = window
+        self.capture_review_id = record.id
+        self.capture_review_initial_text = record.effective_text
+        self.capture_review_dirty = False
+        self.capture_review_expected_updated_at = record.updated_at
+        if record.id in self.current_capture_ids:
+            current_records = self._current_capture_records()
+            self.capture_review_workspace_records = list(current_records)
+            workspace_text = self.ocr_text.get("1.0", "end-1c")
+            self.capture_review_workspace_context = self.current_context_id
+            self.capture_review_workspace_revision = self._source_revision
+            self.capture_review_workspace_text = workspace_text
+            if len(current_records) == 1 and workspace_text == record.effective_text:
+                self.capture_review_workspace_format = "single"
+            elif workspace_text == self._capture_bundle_text(current_records):
+                self.capture_review_workspace_format = "bundle"
+            elif len(current_records) == 1:
+                self.capture_review_workspace_format = "compare_single"
+            else:
+                self.capture_review_workspace_format = "compare_bundle"
+
+        header = tk.Frame(window, bg=MINT_CANVAS)
+        header.pack(fill=tk.X, padx=18, pady=(16, 10))
+        tk.Label(
+            header,
+            text="OCR 원문 검수",
+            bg=MINT_CANVAS,
+            fg=TEAL_DEEP,
+            font=("Malgun Gothic", 16, "bold"),
+        ).pack(anchor=tk.W)
+        tk.Label(
+            header,
+            text=(
+                "원본 업무 문맥을 익명화하거나 자동 교정하지 않습니다. "
+                "이미지와 대조해 최종본을 그대로 저장하세요."
+            ),
+            bg=MINT_CANVAS,
+            fg=TEAL_MUTED,
+            font=("Malgun Gothic", 9),
+        ).pack(anchor=tk.W, pady=(4, 0))
+
+        content = tk.Frame(window, bg=MINT_CANVAS)
+        content.pack(fill=tk.BOTH, expand=True, padx=18)
+
+        image_panel = tk.Frame(content, bg=TEAL_DEEP, width=500)
+        image_panel.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 12))
+        image_panel.pack_propagate(False)
+        review_source_image.thumbnail((480, 610), Image.Resampling.LANCZOS)
+        review_photo = ImageTk.PhotoImage(review_source_image)
+        image_label = tk.Label(image_panel, image=review_photo, bg=TEAL_DEEP)
+        setattr(window, "_capture_review_photo", review_photo)
+        image_label.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+
+        editor_panel = tk.Frame(content, bg=MINT_SURFACE)
+        editor_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        raw_label = "AI OCR 원문 (비교용)"
+        if record.ocr_profile:
+            raw_label += f" · {record.ocr_profile}"
+        tk.Label(
+            editor_panel,
+            text=raw_label,
+            bg=MINT_SURFACE,
+            fg=TEAL_DEEP,
+            font=("Malgun Gothic", 10, "bold"),
+        ).pack(anchor=tk.W, padx=12, pady=(10, 6))
+        raw_text = scrolledtext.ScrolledText(
+            editor_panel,
+            wrap=tk.WORD,
+            height=10,
+            font=("Malgun Gothic", 10),
+            bg=MINT_TEXT_AREA,
+            fg=TEAL_INK,
+            relief=tk.FLAT,
+            padx=10,
+            pady=10,
+        )
+        raw_text.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 10))
+        raw_text.insert("1.0", record.ocr_text)
+        raw_text.configure(state=tk.DISABLED)
+        self.capture_review_raw_text = raw_text
+
+        review_label = "교사 검수 최종본 (업무에 우선 사용)"
+        if record.review_status == "ocr_updated":
+            review_label += " · 검수 뒤 AI OCR 갱신됨"
+        tk.Label(
+            editor_panel,
+            text=review_label,
+            bg=MINT_SURFACE,
+            fg=TEAL_DEEP,
+            font=("Malgun Gothic", 10, "bold"),
+        ).pack(anchor=tk.W, padx=12, pady=(0, 6))
+        review_text = scrolledtext.ScrolledText(
+            editor_panel,
+            wrap=tk.WORD,
+            height=14,
+            undo=True,
+            font=("Malgun Gothic", 10),
+            bg="#ffffff",
+            fg=TEAL_INK,
+            insertbackground=TEAL_PRIMARY_ACTIVE,
+            relief=tk.FLAT,
+            padx=10,
+            pady=10,
+        )
+        review_text.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+        review_text.insert("1.0", record.effective_text)
+        review_text.edit_modified(False)
+        review_text.bind("<<Modified>>", self._on_capture_review_modified)
+        self.capture_review_text = review_text
+
+        footer = tk.Frame(window, bg=MINT_CANVAS)
+        footer.pack(fill=tk.X, padx=18, pady=(10, 14))
+        tk.Label(
+            footer,
+            text=(
+                "검수본은 이 PC의 로컬 DB에 원문 그대로 저장됩니다. "
+                "정밀 OCR을 실행할 때만 선택한 원본 이미지가 OpenAI API로 전송됩니다."
+            ),
+            bg=MINT_CANVAS,
+            fg=TEAL_MUTED,
+            font=("Malgun Gothic", 8),
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        def open_original() -> None:
+            try:
+                os.startfile(str(record.path))
+            except OSError as exc:
+                messagebox.showerror(
+                    "원본 열기 오류",
+                    f"원본 이미지를 열지 못했습니다.\n\n{exc}",
+                    parent=window,
+                )
+
+        tk.Button(
+            footer,
+            text="원본 크게 보기",
+            command=open_original,
+            bg=MINT_PANEL,
+            fg=TEAL_DEEP,
+            relief=tk.FLAT,
+            padx=12,
+            pady=8,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        if record.is_verified:
+            tk.Button(
+                footer,
+                text="검수 해제",
+                command=self._clear_capture_review,
+                bg=MINT_PANEL,
+                fg=TEAL_DEEP,
+                relief=tk.FLAT,
+                padx=12,
+                pady=8,
+            ).pack(side=tk.LEFT)
+        ttk.Button(
+            footer,
+            text="닫기",
+            command=self._close_capture_review_window,
+        ).pack(side=tk.RIGHT)
+        tk.Button(
+            footer,
+            text="검수본 저장",
+            command=self._save_capture_review,
+            bg=TEAL_PRIMARY,
+            fg="#ffffff",
+            activebackground=TEAL_PRIMARY_ACTIVE,
+            activeforeground="#ffffff",
+            relief=tk.FLAT,
+            font=("Malgun Gothic", 9, "bold"),
+            padx=14,
+            pady=8,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        window.bind("<Control-s>", self._save_capture_review_shortcut)
+        window.grab_set()
+        review_text.focus_set()
+
+    def _on_capture_review_modified(self, event: tk.Event) -> None:
+        editor = event.widget
+        if not isinstance(editor, tk.Text) or not editor.edit_modified():
+            return
+        editor.edit_modified(False)
+        self.capture_review_dirty = (
+            editor.get("1.0", "end-1c") != self.capture_review_initial_text
+        )
+
+    def _save_capture_review_shortcut(self, _event: tk.Event) -> str:
+        self._save_capture_review()
+        return "break"
+
+    def _save_capture_review(self, *, close_after: bool = True) -> bool:
+        if self.capture_review_id is None or self.capture_review_text is None:
+            return False
+        text = self.capture_review_text.get("1.0", "end-1c")
+        try:
+            record = self.capture_store.save_verified_text(
+                self.capture_review_id,
+                text,
+                expected_updated_at=self.capture_review_expected_updated_at,
+            )
+        except CaptureConflictError as exc:
+            messagebox.showerror(
+                "캡처 검수 충돌",
+                "다른 Ssokly 창에서 이 캡처가 먼저 변경되었습니다. "
+                "검수 중인 텍스트는 그대로 유지했습니다.\n\n"
+                f"{exc}",
+                parent=self.capture_review_window,
+            )
+            self.status_var.set("다른 창의 캡처 변경과 충돌해 검수본을 저장하지 않았습니다.")
+            return False
+        except Exception as exc:
+            messagebox.showerror(
+                "검수본 저장 오류",
+                "검수 중인 텍스트는 유지했습니다. 로컬 보관함에 저장하지 못했습니다."
+                f"\n\n{exc}",
+                parent=self.capture_review_window,
+            )
+            self.status_var.set("검수본을 저장하지 못했습니다.")
+            return False
+
+        self.capture_review_initial_text = text
+        self.capture_review_dirty = False
+        self.capture_review_expected_updated_at = record.updated_at
+        self.capture_review_text.edit_modified(False)
+        self._refresh_recent_captures(selected=record)
+        workspace_action, comparison_candidate = (
+            self._sync_saved_capture_review_to_workspace(record)
+        )
+        if workspace_action == "applied":
+            self.status_var.set(
+                "검수본을 로컬에 저장하고 현재 업무 원문에 안전하게 반영했습니다."
+            )
+        elif workspace_action == "compare":
+            self.status_var.set(
+                "검수본을 저장했습니다. 현재 업무의 교사 편집을 보호하기 위해 비교 창을 엽니다."
+            )
+        else:
+            self.status_var.set(
+                "캡처별 교사 검수 최종본을 로컬에 저장했습니다."
+            )
+        if close_after:
+            self._destroy_capture_review_window()
+        if comparison_candidate is not None:
+            self.after_idle(
+                lambda candidate=comparison_candidate: self._show_ocr_comparison(
+                    candidate,
+                    title="검수본 적용 비교",
+                    description=(
+                        "현재 업무 원문에 교사 편집이 있어 자동으로 바꾸지 않았습니다. "
+                        "두 원문을 비교한 뒤 적용하세요."
+                    ),
+                    candidate_label="캡처별 교사 검수본",
+                    apply_button_text="검수본 적용",
+                    applied_status="교사 검수본을 현재 업무 원문에 적용했습니다.",
+                )
+            )
+        return True
+
+    def _sync_saved_capture_review_to_workspace(
+        self,
+        saved_record: CaptureRecord,
+    ) -> tuple[str, Optional[str]]:
+        review_format = self.capture_review_workspace_format
+        if (
+            review_format is None
+            or self.capture_review_workspace_context is None
+            or saved_record.id not in self.current_capture_ids
+        ):
+            return "none", None
+        snapshot_records = self.capture_review_workspace_records
+        if [record.id for record in snapshot_records] != self.current_capture_ids:
+            return "none", None
+        current_records = [
+            saved_record if record.id == saved_record.id else record
+            for record in snapshot_records
+        ]
+        if review_format in {"single", "compare_single"}:
+            candidate = saved_record.effective_text
+        else:
+            candidate = self._capture_bundle_text(current_records)
+
+        current_text = self.ocr_text.get("1.0", "end-1c")
+        workspace_unchanged = (
+            self.current_context_id == self.capture_review_workspace_context
+            and self._source_revision == self.capture_review_workspace_revision
+            and current_text == self.capture_review_workspace_text
+        )
+        if current_text == candidate:
+            return "applied", None
+        if workspace_unchanged and review_format in {"single", "bundle"}:
+            self._replace_ocr_text(candidate, track_change=True)
+            self._refresh_auto_title()
+            return "applied", None
+        return "compare", candidate
+
+    def _clear_capture_review(self) -> None:
+        if self.capture_review_id is None:
+            return
+        if not messagebox.askyesno(
+            "검수 해제",
+            "교사 검수 최종본을 해제하고 AI OCR 원문을 다시 사용할까요?\n"
+            "원본 이미지와 AI OCR 원문은 삭제되지 않습니다.",
+            icon=messagebox.WARNING,
+            default=messagebox.NO,
+            parent=self.capture_review_window,
+        ):
+            return
+        try:
+            record = self.capture_store.clear_verified_text(
+                self.capture_review_id,
+                expected_updated_at=self.capture_review_expected_updated_at,
+            )
+        except CaptureConflictError as exc:
+            messagebox.showerror(
+                "캡처 검수 충돌",
+                "다른 Ssokly 창에서 이 캡처가 먼저 변경되어 검수본을 해제하지 않았습니다."
+                f"\n\n{exc}",
+                parent=self.capture_review_window,
+            )
+            return
+        except Exception as exc:
+            messagebox.showerror(
+                "검수 해제 오류",
+                f"검수본을 해제하지 못했습니다.\n\n{exc}",
+                parent=self.capture_review_window,
+            )
+            return
+        self._refresh_recent_captures(selected=record)
+        workspace_action, comparison_candidate = (
+            self._sync_saved_capture_review_to_workspace(record)
+        )
+        if workspace_action == "applied":
+            self.status_var.set(
+                "교사 검수본을 해제하고 현재 업무에도 AI OCR 원문을 반영했습니다."
+            )
+        elif workspace_action == "compare":
+            self.status_var.set(
+                "검수본을 해제했습니다. 현재 업무의 교사 편집을 보호하기 위해 비교 창을 엽니다."
+            )
+        else:
+            self.status_var.set(
+                "교사 검수본을 해제하고 저장된 AI OCR 원문으로 돌아갔습니다."
+            )
+        self._destroy_capture_review_window()
+        if comparison_candidate is not None:
+            self.after_idle(
+                lambda candidate=comparison_candidate: self._show_ocr_comparison(
+                    candidate,
+                    title="검수 해제 반영 비교",
+                    description=(
+                        "현재 업무 원문에 교사 편집이 있어 자동으로 바꾸지 않았습니다. "
+                        "AI OCR 원문으로 돌아갈지 비교해 결정하세요."
+                    ),
+                    candidate_label="저장된 AI OCR 원문",
+                    apply_button_text="AI OCR 적용",
+                    applied_status="AI OCR 원문을 현재 업무에 적용했습니다.",
+                )
+            )
+
+    def _close_capture_review_window(self) -> bool:
+        window = self.capture_review_window
+        if window is None:
+            return True
+        try:
+            if not window.winfo_exists():
+                self._reset_capture_review_state()
+                return True
+        except tk.TclError:
+            self._reset_capture_review_state()
+            return True
+        if self.capture_review_dirty:
+            decision = messagebox.askyesnocancel(
+                "검수본 저장",
+                "수정한 검수본을 저장할까요?",
+                icon=messagebox.WARNING,
+                parent=window,
+            )
+            if decision is None:
+                return False
+            if decision and not self._save_capture_review(close_after=False):
+                return False
+        self._destroy_capture_review_window()
+        return True
+
+    def _destroy_capture_review_window(self) -> None:
+        window = self.capture_review_window
+        self._reset_capture_review_state()
+        if window is None:
+            return
+        try:
+            window.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            if window.winfo_exists():
+                window.destroy()
+        except tk.TclError:
+            pass
+
+    def _reset_capture_review_state(self) -> None:
+        self.capture_review_window = None
+        self.capture_review_text = None
+        self.capture_review_raw_text = None
+        self.capture_review_id = None
+        self.capture_review_initial_text = ""
+        self.capture_review_dirty = False
+        self.capture_review_expected_updated_at = None
+        self.capture_review_workspace_context = None
+        self.capture_review_workspace_revision = None
+        self.capture_review_workspace_text = ""
+        self.capture_review_workspace_format = None
+        self.capture_review_workspace_records = []
+
+    def _selected_captures(self) -> list[CaptureRecord]:
+        if self.capture_inbox_tree is None:
+            return []
+        selected_ids = set(self.capture_inbox_tree.selection())
+        records = [record for record in self.capture_records if record.id in selected_ids]
+        return sorted(records, key=lambda record: (record.created_at, record.id))
+
+    def _selected_capture(self) -> Optional[CaptureRecord]:
+        records = self._selected_captures()
+        return records[0] if records else None
+
+    def _capture_bundle_text(
+        self,
+        records: list[CaptureRecord],
+        *,
+        prefer_verified: bool = True,
+    ) -> str:
+        sections = []
+        for index, record in enumerate(records, start=1):
+            header = f"[캡처 {index} · {record.created_at.astimezone():%Y-%m-%d %H:%M}]"
+            text = record.effective_text if prefer_verified else record.ocr_text
+            sections.append(f"{header}\n{text}")
+        return "\n\n".join(sections)
+
+    def _captures_have_text(self, records: list[CaptureRecord]) -> bool:
+        unread = [record for record in records if not record.effective_text.strip()]
+        if unread:
+            messagebox.showinfo(
+                "정밀 OCR 필요",
+                f"선택한 캡처 중 {len(unread)}개는 아직 텍스트가 없습니다.\n"
+                "먼저 '정밀 OCR'로 장별 원문을 읽어 주세요.",
+            )
+            return False
+        failed_with_previous = [
+            record
+            for record in records
+            if record.ocr_status == "failed"
+            and not record.is_verified
+            and record.ocr_text.strip()
+        ]
+        if failed_with_previous and not messagebox.askyesno(
+            "직전 OCR 원문 사용",
+            f"선택한 캡처 중 {len(failed_with_previous)}개는 마지막 재인식에 실패해 "
+            "직전에 성공한 OCR 원문을 보존하고 있습니다.\n\n"
+            "보존된 원문을 사용해 계속할까요?",
+            icon=messagebox.WARNING,
+            default=messagebox.NO,
+        ):
+            return False
+        return True
+
+    @staticmethod
+    def _captures_are_active(records: list[CaptureRecord]) -> bool:
+        return bool(records) and all(record.trashed_at is None for record in records)
+
+    def _require_active_captures(self, records: list[CaptureRecord]) -> bool:
+        if self._captures_are_active(records):
+            return True
+        messagebox.showinfo(
+            "캡처 복원 필요",
+            "휴지통의 캡처는 먼저 복원한 뒤 업무에 넣거나 정밀 OCR해 주세요.",
+        )
+        return False
+
+    def bundle_selected_captures(self) -> None:
+        records = self._selected_captures()
+        if not records:
+            messagebox.showinfo("캡처 보관함", "새 업무로 묶을 캡처를 선택해 주세요.")
+            return
+        if self._active_operation_id is not None:
+            messagebox.showinfo("처리 중", "현재 작업이 끝난 뒤 캡처를 묶어 주세요.")
+            return
+        if not self._require_active_captures(records):
+            return
+        if not self._captures_have_text(records):
+            return
+        if not self._prepare_to_leave_current("캡처 묶음 새 업무"):
             return
 
-        if not self._prepare_to_leave_current("최근 캡처 새 업무"):
-            return
+        combined_text = self._capture_bundle_text(records)
         self._close_recent_window()
         self._start_new_workspace(
             source_kind="capture",
-            source_name="최근 캡처",
-            capture_path=record.path,
+            source_name=f"캡처 {len(records)}개",
+            capture_path=records[0].path,
+            capture_ids=[record.id for record in records],
         )
-        self._run_ocr(image)
+        self._replace_ocr_text(combined_text, track_change=True)
+        first_title = self._capture_ocr_preview(records[0])
+        self._set_title_programmatically(
+            self._clean_title(first_title) or self._fallback_task_title()
+        )
+        self.notebook.select(self.source_tab)
+        self.status_var.set(
+            f"캡처 {len(records)}개의 장별 OCR 원문을 시간순으로 묶었습니다. 원본과 대조해 주세요."
+        )
 
-    def delete_recent_capture(self) -> None:
-        record = self._selected_capture()
-        if record is None:
-            messagebox.showinfo("최근 캡처", "삭제할 임시 캡처를 선택해 주세요.")
+    def add_selected_captures_to_current_task(self) -> None:
+        records = self._selected_captures()
+        if not records:
+            messagebox.showinfo("캡처 보관함", "현재 업무에 추가할 캡처를 선택해 주세요.")
             return
-        if (
-            self.current_task_id is None
-            and self.current_source_kind == "capture"
-            and self.current_capture_path is not None
-            and self.current_capture_path.resolve(strict=False) == record.path.resolve(strict=False)
+        if self._active_operation_id is not None:
+            messagebox.showinfo("처리 중", "현재 작업이 끝난 뒤 캡처를 추가해 주세요.")
+            return
+        if not self._require_active_captures(records):
+            return
+        existing_capture_ids = set(self.current_capture_ids)
+        records = [
+            record for record in records if record.id not in existing_capture_ids
+        ]
+        if not records:
+            messagebox.showinfo(
+                "이미 추가된 캡처",
+                "선택한 캡처는 모두 현재 업무에 이미 포함되어 있습니다.",
+            )
+            return
+        if not self._captures_have_text(records):
+            return
+
+        existing = self.ocr_text.get("1.0", "end-1c")
+        addition = self._capture_bundle_text(records)
+        combined = f"{existing}\n\n{addition}" if existing else addition
+        self._replace_ocr_text(combined, track_change=True)
+        self.current_capture_ids = list(
+            dict.fromkeys(
+                [*self.current_capture_ids, *(record.id for record in records)]
+            )
+        )
+        if self.current_capture_path is None:
+            self.current_capture_path = records[0].path
+        if self.current_task_id is not None and not self.save_current_task(show_success=False):
+            messagebox.showerror(
+                "캡처 추가 저장 오류",
+                "캡처 원문은 화면에 유지됐지만 업무 보관함에는 저장하지 못했습니다.",
+            )
+            return
+        self._close_recent_window()
+        self.notebook.select(self.source_tab)
+        self.status_var.set(
+            f"현재 업무에 캡처 {len(records)}개의 OCR 원문을 추가했습니다."
+        )
+
+    def reread_selected_captures(self) -> None:
+        records = self._selected_captures()
+        if not records:
+            messagebox.showinfo("캡처 보관함", "정밀 OCR로 다시 읽을 캡처를 선택해 주세요.")
+            return
+        if self._active_operation_id is not None:
+            messagebox.showinfo("처리 중", "현재 작업이 끝난 뒤 다시 읽어 주세요.")
+            return
+        if not self._require_active_captures(records):
+            return
+        self._run_capture_batch_ocr(records)
+
+    def trash_selected_captures(self) -> None:
+        records = self._selected_captures()
+        if not records:
+            messagebox.showinfo("캡처 보관함", "휴지통으로 옮길 캡처를 선택해 주세요.")
+            return
+        linked = [record for record in records if record.linked_task_ids]
+        if linked:
+            messagebox.showinfo(
+                "연결된 캡처 보호",
+                "업무에 연결된 캡처는 휴지통으로 옮길 수 없습니다.\n"
+                "업무를 삭제하거나 연결을 해제한 뒤 정리해 주세요.",
+            )
+            return
+        current_paths = (
+            {self.current_capture_path.resolve(strict=False)}
+            if self.current_capture_path is not None
+            else set()
+        )
+        current_ids = set(self.current_capture_ids)
+        if any(
+            record.id in current_ids
+            or record.path.resolve(strict=False) in current_paths
+            for record in records
         ):
-            messagebox.showinfo("사용 중인 캡처", "현재 저장 전 업무가 사용하는 캡처는 삭제할 수 없습니다.")
+            messagebox.showinfo(
+                "사용 중인 캡처",
+                "현재 업무가 사용하는 캡처는 다른 업무로 이동한 뒤 정리해 주세요.",
+            )
             return
         if not messagebox.askyesno(
-            "임시 캡처 삭제",
-            "선택한 임시 캡처를 삭제할까요?\n저장된 업무의 영구 캡처는 삭제되지 않습니다.",
+            "캡처 휴지통",
+            f"선택한 미분류 캡처 {len(records)}개를 휴지통으로 옮길까요?\n"
+            "원본 첨부 파일은 삭제되지 않으며 캡처함에서 복원할 수 있습니다.",
             icon=messagebox.WARNING,
             default=messagebox.NO,
         ):
             return
 
         try:
-            self.capture_store.delete(record)
-        except OSError as exc:
+            self.capture_store.trash([record.id for record in records])
+        except Exception as exc:
             messagebox.showerror(
-                "임시 캡처 삭제 오류",
-                f"선택한 임시 캡처를 삭제하지 못했습니다.\n\n{exc}",
+                "캡처 정리 오류",
+                f"선택한 캡처를 휴지통으로 옮기지 못했습니다.\n\n{exc}",
             )
-            self.status_var.set("임시 캡처를 삭제하지 못했습니다.")
+            self.status_var.set("캡처를 정리하지 못했습니다.")
             return
         self._refresh_recent_captures()
-        self.status_var.set("선택한 임시 캡처를 삭제했습니다.")
+        self.status_var.set("선택한 미분류 캡처를 휴지통으로 옮겼습니다.")
+
+    def restore_selected_captures(self) -> None:
+        records = self._selected_captures()
+        if not records:
+            messagebox.showinfo("캡처 보관함", "복원할 캡처를 선택해 주세요.")
+            return
+        try:
+            self.capture_store.restore([record.id for record in records])
+        except Exception as exc:
+            messagebox.showerror("캡처 복원 오류", f"캡처를 복원하지 못했습니다.\n\n{exc}")
+            return
+        self._refresh_recent_captures()
+        self.status_var.set("선택한 캡처를 복원했습니다.")
 
     def open_capture_folder(self) -> None:
         try:
             os.startfile(str(self.capture_store.directory))
-            self.status_var.set("임시 캡처 저장 폴더를 열었습니다.")
+            self.status_var.set("캡처 보관함 원본 폴더를 열었습니다.")
         except OSError as exc:
-            messagebox.showerror("폴더 열기 오류", f"임시 저장 폴더를 열지 못했습니다.\n\n{exc}")
-            self.status_var.set("임시 캡처 저장 폴더를 열지 못했습니다.")
+            messagebox.showerror(
+                "폴더 열기 오류",
+                f"캡처 보관함 원본 폴더를 열지 못했습니다.\n\n{exc}",
+            )
+            self.status_var.set("캡처 보관함 폴더를 열지 못했습니다.")
 
     def _refresh_recent_captures(self, selected: Optional[CaptureRecord] = None) -> None:
+        filter_value = self.capture_inbox_filter_var.get()
         try:
-            self.capture_records = self.capture_store.list_recent()
-        except OSError:
+            unclassified_count = self.capture_store.count("unclassified")
+        except Exception:
+            unclassified_count = 0
+        self.recent_count_var.set(f"캡처함 · 미분류 {unclassified_count}")
+
+        if self.capture_inbox_tree is None or not self.capture_inbox_tree.winfo_exists():
             self.capture_records = []
-        self.recent_count_var.set(
-            f"최근 캡처 {len(self.capture_records)}/{self.capture_store.max_items}"
+            return
+        try:
+            records = self.capture_store.search(
+                query=self.capture_search_var.get(),
+                link_filter="all" if filter_value == "trash" else filter_value,
+                trashed=filter_value == "trash",
+                limit=CAPTURE_INBOX_PAGE_LIMIT,
+            )
+        except Exception:
+            records = []
+        self._update_capture_inbox_filter_buttons()
+        self._populate_capture_inbox_records(
+            records,
+            selected_ids=[selected.id] if selected is not None else None,
         )
 
-        if self.recent_list is None or not self.recent_list.winfo_exists():
+    def _populate_capture_inbox_records(
+        self,
+        records: list[CaptureRecord],
+        *,
+        selected_ids: Optional[list[str]] = None,
+        count_label: Optional[str] = None,
+    ) -> None:
+        if self.capture_inbox_tree is None or not self.capture_inbox_tree.winfo_exists():
             return
-        self.recent_list.delete(0, tk.END)
+        self.capture_records = list(records)
+        self._cancel_capture_thumbnail_load()
+        self._capture_thumbnail_generation += 1
+        generation = self._capture_thumbnail_generation
+        self.capture_thumbnail_photos.clear()
+        for item in self.capture_inbox_tree.get_children():
+            self.capture_inbox_tree.delete(item)
         for record in self.capture_records:
-            self.recent_list.insert(tk.END, record.label)
+            self.capture_inbox_tree.insert(
+                "",
+                tk.END,
+                iid=record.id,
+                text=self._capture_ocr_preview(record),
+                values=(
+                    record.created_at.astimezone().strftime("%m/%d %H:%M"),
+                    self._capture_state_label(record),
+                ),
+            )
+
+        if self.capture_selected_count_var is not None:
+            limit_hint = (
+                "최대 "
+                if len(self.capture_records) >= CAPTURE_INBOX_PAGE_LIMIT
+                else ""
+            )
+            self.capture_selected_count_var.set(
+                count_label
+                or f"{limit_hint}{len(self.capture_records)}개 표시 · 0개 선택"
+            )
 
         if not self.capture_records:
             self.preview_photo = None
             if self.preview_label is not None:
-                self.preview_label.configure(image="", text="아직 임시 캡처가 없습니다.")
+                self.preview_label.configure(image="", text="이 분류에는 캡처가 없습니다.")
+            self._set_capture_preview_text("")
+            self._render_capture_inbox_actions()
             return
 
-        selected_path = selected.path if selected else self.capture_records[0].path
-        for index, record in enumerate(self.capture_records):
-            if record.path == selected_path:
-                self.recent_list.selection_set(index)
-                self.recent_list.activate(index)
-                self._show_capture_preview(record)
-                break
+        valid_selected_ids = [
+            capture_id
+            for capture_id in (selected_ids or [self.capture_records[0].id])
+            if self.capture_inbox_tree.exists(capture_id)
+        ]
+        if valid_selected_ids:
+            self.capture_inbox_tree.selection_set(*valid_selected_ids)
+            selected_id = valid_selected_ids[0]
+            self.capture_inbox_tree.focus(selected_id)
+            chosen = next(
+                record for record in self.capture_records if record.id == selected_id
+            )
+            self._show_capture_preview(chosen)
+            if self.capture_selected_count_var is not None and count_label is None:
+                limit_hint = (
+                    "최대 "
+                    if len(self.capture_records) >= CAPTURE_INBOX_PAGE_LIMIT
+                    else ""
+                )
+                self.capture_selected_count_var.set(
+                    f"{limit_hint}{len(self.capture_records)}개 표시 · "
+                    f"{len(valid_selected_ids)}개 선택"
+                )
+        self._capture_thumbnail_after_id = self.after_idle(
+            lambda: self._load_next_capture_thumbnail(generation, 0)
+        )
+        self._render_capture_inbox_actions()
 
     def _on_recent_capture_selected(self, _event: tk.Event) -> None:
-        record = self._selected_capture()
-        if record is not None:
-            self._show_capture_preview(record)
-
-    def _selected_capture(self) -> Optional[CaptureRecord]:
-        if self.recent_list is None:
-            return None
-        selection = self.recent_list.curselection()
-        if not selection:
-            return None
-        index = selection[0]
-        if index >= len(self.capture_records):
-            return None
-        return self.capture_records[index]
+        records = self._selected_captures()
+        if records:
+            self._show_capture_preview(records[0])
+        if self.capture_selected_count_var is not None:
+            display_count = len(self.capture_records)
+            limit_hint = "최대 " if display_count >= CAPTURE_INBOX_PAGE_LIMIT else ""
+            self.capture_selected_count_var.set(
+                f"{limit_hint}{display_count}개 표시 · {len(records)}개 선택"
+            )
+        self._render_capture_inbox_actions()
 
     def _show_capture_preview(self, record: CaptureRecord) -> None:
         if self.preview_label is None:
             return
+        if record.is_verified:
+            review_note = "[교사 검수 최종본]"
+            if record.review_status == "ocr_updated":
+                review_note += " · 검수 뒤 AI OCR이 갱신됨"
+            detail_parts = [review_note, record.verified_text]
+            if record.ocr_text or record.ocr_error:
+                detail_parts.extend(["[AI OCR 원문 · 비교용]", record.ocr_text])
+        else:
+            detail_parts = ["[AI OCR 원문 · 검수 필요]", record.ocr_text]
+        if record.ocr_error:
+            detail_parts.extend(["[마지막 OCR 오류]", record.ocr_error])
+        detail = "\n".join(detail_parts)
         try:
             image = self.capture_store.load(record)
             image.thumbnail((450, 330), Image.Resampling.LANCZOS)
             self.preview_photo = ImageTk.PhotoImage(image)
             self.preview_label.configure(image=self.preview_photo, text="")
+            self._set_capture_preview_text(detail)
         except OSError:
             self.preview_photo = None
             self.preview_label.configure(image="", text="미리보기를 열 수 없습니다.")
+            self._set_capture_preview_text(detail)
+
+    def _set_capture_preview_text(self, text: str) -> None:
+        if self.capture_preview_text is None:
+            return
+        self.capture_preview_text.configure(state=tk.NORMAL)
+        self.capture_preview_text.delete("1.0", tk.END)
+        self.capture_preview_text.insert("1.0", text)
+        self.capture_preview_text.configure(state=tk.DISABLED)
+
+    def _load_next_capture_thumbnail(self, generation: int, index: int) -> None:
+        self._capture_thumbnail_after_id = None
+        if (
+            generation != self._capture_thumbnail_generation
+            or self.capture_inbox_tree is None
+            or not self.capture_inbox_tree.winfo_exists()
+            or index >= len(self.capture_records)
+        ):
+            return
+        record = self.capture_records[index]
+        try:
+            image = self.capture_store.load(record)
+            image.thumbnail((72, 48), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
+            self.capture_thumbnail_photos[record.id] = photo
+            if self.capture_inbox_tree.exists(record.id):
+                self.capture_inbox_tree.item(record.id, image=photo)
+        except OSError:
+            pass
+        self._capture_thumbnail_after_id = self.after_idle(
+            lambda: self._load_next_capture_thumbnail(generation, index + 1)
+        )
+
+    def _cancel_capture_thumbnail_load(self) -> None:
+        if self._capture_thumbnail_after_id is None:
+            return
+        try:
+            self.after_cancel(self._capture_thumbnail_after_id)
+        except tk.TclError:
+            pass
+        self._capture_thumbnail_after_id = None
+
+    def _render_capture_inbox_actions(self) -> None:
+        records = self._selected_captures()
+        processing = self._active_operation_id is not None
+        trash_view = self.capture_inbox_filter_var.get() == "trash"
+        selected_state = tk.NORMAL if records and not processing else tk.DISABLED
+        active_buttons = (
+            self.reopen_button,
+            self.add_capture_button,
+            self.review_capture_button,
+            self.reread_capture_button,
+        )
+        if trash_view:
+            for widget in active_buttons:
+                if widget is not None:
+                    widget.pack_forget()
+            if self.delete_capture_button is not None:
+                self.delete_capture_button.pack_forget()
+        else:
+            if self.delete_capture_button is not None:
+                self.delete_capture_button.configure(
+                    text="휴지통으로",
+                    command=self.trash_selected_captures,
+                )
+                if not self.delete_capture_button.winfo_manager():
+                    self.delete_capture_button.pack(
+                        side=tk.LEFT,
+                        padx=(0, 6),
+                        before=self.open_capture_folder_button,
+                    )
+            for widget in active_buttons:
+                if (
+                    widget is not None
+                    and not widget.winfo_manager()
+                    and self.delete_capture_button is not None
+                ):
+                    widget.pack(
+                        side=tk.LEFT,
+                        padx=(0, 6),
+                        before=self.delete_capture_button,
+                    )
+                self._set_widget_state(
+                    widget,
+                    tk.NORMAL if records and not processing else tk.DISABLED,
+                )
+            self._set_widget_state(
+                self.delete_capture_button,
+                tk.NORMAL
+                if records
+                and not processing
+                and not any(record.linked_task_ids for record in records)
+                else tk.DISABLED,
+            )
+            self._set_widget_state(
+                self.review_capture_button,
+                tk.NORMAL
+                if len(records) == 1 and not processing
+                else tk.DISABLED,
+            )
+        if self.restore_capture_button is not None:
+            if trash_view:
+                if not self.restore_capture_button.winfo_manager():
+                    self.restore_capture_button.pack(
+                        side=tk.LEFT,
+                        padx=(0, 6),
+                        before=self.open_capture_folder_button,
+                    )
+                self._set_widget_state(self.restore_capture_button, selected_state)
+            else:
+                self.restore_capture_button.pack_forget()
 
     def _bind_change_tracking(self) -> None:
         self.task_title_var.trace_add("write", self._on_title_changed)
         self.task_search_var.trace_add("write", self._on_task_search_changed)
+        self.capture_search_var.trace_add("write", self._on_capture_search_changed)
         self.ocr_text.bind("<<Modified>>", self._on_editor_modified)
         self.result_text.bind("<<Modified>>", self._on_editor_modified)
         self.ocr_text.edit_modified(False)
@@ -1605,6 +3041,28 @@ class SsoklyApp(tk.Tk):
             TASK_SEARCH_DELAY_MS,
             self._apply_task_search,
         )
+
+    def _on_capture_search_changed(self, *_args: object) -> None:
+        self._cancel_capture_search_refresh()
+        if self._closing or self.recent_window is None:
+            return
+        self._capture_search_after_id = self.after(
+            TASK_SEARCH_DELAY_MS,
+            self._apply_capture_search,
+        )
+
+    def _apply_capture_search(self) -> None:
+        self._capture_search_after_id = None
+        self._refresh_recent_captures()
+
+    def _cancel_capture_search_refresh(self) -> None:
+        if self._capture_search_after_id is None:
+            return
+        try:
+            self.after_cancel(self._capture_search_after_id)
+        except tk.TclError:
+            pass
+        self._capture_search_after_id = None
 
     def _apply_task_search(self) -> None:
         self._task_search_after_id = None
@@ -1721,6 +3179,7 @@ class SsoklyApp(tk.Tk):
         source_name: str = "",
         source_path: Optional[Path] = None,
         capture_path: Optional[Path] = None,
+        capture_ids: Optional[list[str]] = None,
     ) -> None:
         self._cancel_autosave()
         self.current_context_id = uuid4().hex
@@ -1731,6 +3190,7 @@ class SsoklyApp(tk.Tk):
         self.current_source_name = source_name
         self.current_source_path = source_path.resolve(strict=False) if source_path else None
         self.current_capture_path = capture_path.resolve(strict=False) if capture_path else None
+        self.current_capture_ids = list(dict.fromkeys(capture_ids or []))
         self.current_output_mode = DEFAULT_OUTPUT_MODE
         self._source_revision = 0
         self._result_revision = 0
@@ -1811,6 +3271,16 @@ class SsoklyApp(tk.Tk):
                 messagebox.showerror("업무 저장 오류", f"업무를 저장하지 못했습니다.\n\n{exc}")
             return False
 
+        capture_link_error: Optional[str] = None
+        if self.current_capture_ids:
+            try:
+                self.capture_store.link_to_task(
+                    self.current_capture_ids,
+                    record.id,
+                )
+            except Exception as exc:
+                capture_link_error = str(exc) or "캡처 연결 중 알 수 없는 오류가 발생했습니다."
+
         self.current_task_id = record.id
         self.current_task_updated_at = record.updated_at
         self.current_task_status = record.status
@@ -1819,14 +3289,40 @@ class SsoklyApp(tk.Tk):
         self.current_source_path = Path(record.source_path) if record.source_path else None
         self.current_capture_path = Path(record.capture_path) if record.capture_path else None
         self.current_output_mode = record.output_mode
-        self.current_dirty = False
-        self._autosave_failed = False
+        self.current_dirty = capture_link_error is not None
+        self._autosave_failed = capture_link_error is not None
         self.title_is_auto = False
         self._refresh_task_library(selected_id=record.id)
+        self._refresh_recent_captures()
         self._render_workspace_state()
-        if show_success:
+        if capture_link_error:
+            self.status_var.set(
+                "업무 내용은 저장했지만 캡처 원본 연결을 완료하지 못했습니다."
+            )
+            if show_success:
+                messagebox.showwarning(
+                    "캡처 원본 연결 오류",
+                    "업무 원문과 실행안은 저장됐지만 캡처 원본 연결에 실패했습니다.\n"
+                    "현재 캡처는 캡처함에 그대로 보존됩니다. 저장 버튼으로 다시 시도해 주세요.\n\n"
+                    f"{capture_link_error}",
+                )
+        elif show_success:
             self.status_var.set("업무 보관함에 저장했습니다. 이후 수정은 자동 저장됩니다.")
-        return True
+        return capture_link_error is None
+
+    def _capture_ids_for_task(
+        self,
+        task_id: str,
+        *,
+        raise_errors: bool = False,
+    ) -> list[str]:
+        try:
+            records = self.capture_store.captures_for_task(task_id)
+        except Exception:
+            if raise_errors:
+                raise
+            return []
+        return [record.id for record in records]
 
     def _prepare_to_leave_current(self, reason: str) -> bool:
         discard_operation = False
@@ -1884,16 +3380,21 @@ class SsoklyApp(tk.Tk):
         self._held_worker_results.clear()
 
     def _invalidate_active_operation(self) -> None:
+        if self._active_operation_cancel_event is not None:
+            self._active_operation_cancel_event.set()
         self._active_operation_id = None
         self._active_operation_context = None
         self._active_operation_kind = None
         self._active_operation_revisions = None
+        self._active_operation_cancel_event = None
         self._discard_held_worker_results()
         self._hide_operation_progress()
         self._render_workspace_state()
 
     def _on_close(self) -> None:
         if self._closing:
+            return
+        if not self._close_capture_review_window():
             return
         if not self._prepare_to_leave_current("앱 종료"):
             return
@@ -1911,6 +3412,9 @@ class SsoklyApp(tk.Tk):
         self._active_operation_context = None
         self._active_operation_kind = None
         self._active_operation_revisions = None
+        if self._active_operation_cancel_event is not None:
+            self._active_operation_cancel_event.set()
+        self._active_operation_cancel_event = None
         self._hide_operation_progress()
         if self._worker_poll_after_id is not None:
             try:
@@ -2020,6 +3524,7 @@ class SsoklyApp(tk.Tk):
         self.current_source_name = record.source_name
         self.current_source_path = Path(record.source_path) if record.source_path else None
         self.current_capture_path = Path(record.capture_path) if record.capture_path else None
+        self.current_capture_ids = self._capture_ids_for_task(record.id)
         self.current_output_mode = record.output_mode
         self._source_revision = 0
         self._result_revision = 0
@@ -2091,19 +3596,59 @@ class SsoklyApp(tk.Tk):
         if not messagebox.askyesno(
             "업무 삭제",
             f"'{record.title}' 업무를 삭제할까요?\n"
-            "저장된 캡처 사본은 함께 삭제되지만 외부 첨부 원본은 유지됩니다.",
+            "업무 전용 캡처 사본만 삭제되며 캡처 보관함 원본과 외부 파일은 유지됩니다.",
             icon=messagebox.WARNING,
             default=messagebox.NO,
         ):
             return
 
         try:
+            linked_capture_ids = self._capture_ids_for_task(
+                record.id,
+                raise_errors=True,
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "업무 삭제 준비 오류",
+                "캡처 보관함 연결을 확인하지 못해 업무를 삭제하지 않았습니다.\n\n"
+                f"{exc}",
+            )
+            return
+        if linked_capture_ids:
+            try:
+                self.capture_store.unlink_task(linked_capture_ids, record.id)
+            except Exception as exc:
+                messagebox.showerror(
+                    "업무 삭제 준비 오류",
+                    "캡처 원본 연결을 안전하게 해제하지 못해 업무를 삭제하지 않았습니다.\n\n"
+                    f"{exc}",
+                )
+                return
+        try:
             deleted = self.task_store.delete(record.id)
         except Exception as exc:
-            messagebox.showerror("업무 삭제 오류", f"업무를 삭제하지 못했습니다.\n\n{exc}")
+            relink_error: Optional[str] = None
+            try:
+                task_still_exists = self.task_store.get(record.id) is not None
+            except Exception:
+                task_still_exists = True
+            if linked_capture_ids and task_still_exists:
+                try:
+                    self.capture_store.link_to_task(linked_capture_ids, record.id)
+                except Exception as relink_exc:
+                    relink_error = str(relink_exc)
+            detail = f"업무를 삭제하지 못했습니다.\n\n{exc}"
+            if relink_error:
+                detail += (
+                    "\n\n캡처 연결 복구에도 실패했습니다. 캡처 원본은 보관함에 유지됩니다.\n"
+                    f"{relink_error}"
+                )
+            messagebox.showerror("업무 삭제 오류", detail)
+            self._refresh_recent_captures()
             return
         if not deleted:
             self._refresh_task_library()
+            self._refresh_recent_captures()
             return
 
         if record.id == self.current_task_id:
@@ -2111,11 +3656,38 @@ class SsoklyApp(tk.Tk):
             self._invalidate_active_operation()
             self._start_new_workspace(source_kind="manual", source_name="직접 입력")
         self._refresh_task_library()
-        self.status_var.set("선택한 업무를 삭제했습니다. 외부 원본 파일은 유지됩니다.")
+        self._refresh_recent_captures()
+        self.status_var.set(
+            "선택한 업무를 삭제했습니다. 캡처 원본과 외부 파일은 유지됩니다."
+        )
 
     def reread_current_source(self) -> None:
         if self._active_operation_id is not None:
             messagebox.showinfo("처리 중", "현재 작업이 끝난 뒤 원문을 다시 읽어 주세요.")
+            return
+
+        capture_records = self._current_capture_records()
+        if capture_records:
+            if len(capture_records) > 1:
+                self._run_capture_batch_ocr(
+                    capture_records,
+                    apply_mode="review_bundle",
+                )
+                return
+            record = capture_records[0]
+            try:
+                image = self.capture_store.load(record)
+            except OSError as exc:
+                messagebox.showerror(
+                    "캡처 원본 오류",
+                    f"캡처 보관함의 원본을 열지 못했습니다.\n\n{exc}",
+                )
+                return
+            self._run_ocr(
+                image,
+                capture_id=record.id,
+                apply_mode="review",
+            )
             return
 
         if self.current_source_kind == "capture":
@@ -2128,7 +3700,7 @@ class SsoklyApp(tk.Tk):
             except OSError as exc:
                 messagebox.showerror("캡처 원본 오류", f"캡처 이미지를 열지 못했습니다.\n\n{exc}")
                 return
-            self._run_ocr(image)
+            self._run_ocr(image, apply_mode="review")
             return
 
         if self.current_source_kind != "file":
@@ -2147,7 +3719,7 @@ class SsoklyApp(tk.Tk):
             if kind == "image":
                 with Image.open(path) as source_image:
                     image = source_image.copy()
-                self._run_ocr(image)
+                self._run_ocr(image, apply_mode="review")
             elif kind == "text":
                 self._finish_document_extraction(read_text_file(path), path.name)
             elif kind == "hwpx":
@@ -2160,6 +3732,27 @@ class SsoklyApp(tk.Tk):
             messagebox.showerror("원문 다시 읽기 오류", f"원본을 다시 읽지 못했습니다.\n\n{exc}")
 
     def open_current_source(self) -> None:
+        capture_records = self._current_capture_records()
+        if len(capture_records) > 1:
+            self.show_recent_captures()
+            self.capture_search_var.set("")
+            self._cancel_capture_search_refresh()
+            self.capture_inbox_filter_var.set("all")
+            self._update_capture_inbox_filter_buttons()
+            self._populate_capture_inbox_records(
+                capture_records,
+                selected_ids=[record.id for record in capture_records],
+                count_label=f"현재 업무 원본 {len(capture_records)}개",
+            )
+            self.status_var.set(
+                f"현재 업무에 연결된 원본 캡처 {len(capture_records)}개를 표시했습니다."
+            )
+            return
+        if capture_records:
+            record = capture_records[0]
+            self._show_source_preview(record.path, self.task_title_var.get())
+            return
+
         if self.current_source_kind == "capture":
             if self.current_capture_path is None or not self.current_capture_path.exists():
                 messagebox.showinfo("원본 없음", "연결된 캡처 이미지를 찾을 수 없습니다.")
@@ -2182,6 +3775,17 @@ class SsoklyApp(tk.Tk):
             return
 
         messagebox.showinfo("직접 입력 업무", "직접 입력한 업무에는 별도 원본 파일이 없습니다.")
+
+    def _current_capture_records(self) -> list[CaptureRecord]:
+        records: list[CaptureRecord] = []
+        for capture_id in self.current_capture_ids:
+            try:
+                record = self.capture_store.get(capture_id)
+            except Exception:
+                continue
+            if record is not None and record.trashed_at is None and record.path.exists():
+                records.append(record)
+        return records
 
     def _show_source_preview(self, path: Path, title: str) -> None:
         try:
@@ -2303,23 +3907,24 @@ class SsoklyApp(tk.Tk):
             text="다시 진행" if self.current_task_status == "completed" else "완료로 표시",
             state=tk.NORMAL if self.current_task_id is not None and not processing else tk.DISABLED,
         )
-        has_source = (
+        has_source = bool(self.current_capture_ids) or (
             self.current_capture_path is not None
             if self.current_source_kind == "capture"
             else self.current_source_path is not None
             if self.current_source_kind == "file"
             else False
         )
+        capture_count = len(self.current_capture_ids)
         self.open_source_button.configure(
-            state=tk.NORMAL if has_source else tk.DISABLED
+            text=f"원본 보기 ({capture_count})" if capture_count > 1 else "원본 보기",
+            state=tk.NORMAL if has_source else tk.DISABLED,
         )
         self.reread_source_button.configure(
+            text="정밀 재인식",
             state=tk.NORMAL if has_source and not processing else tk.DISABLED
         )
 
         self._set_widget_state(self.ocr_text, tk.NORMAL)
         self._set_widget_state(self.result_text, tk.NORMAL)
 
-        recent_action_state = tk.DISABLED if processing else tk.NORMAL
-        self._set_widget_state(self.reopen_button, recent_action_state)
-        self._set_widget_state(self.delete_capture_button, recent_action_state)
+        self._render_capture_inbox_actions()
