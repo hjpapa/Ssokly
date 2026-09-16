@@ -102,6 +102,8 @@ class PersonalTodoStore:
                     if card:
                         row['item'] = render_card_item(card)
                         row['card_version'] = card['version']
+                        row['source_stale'] = card['source_stale']
+                        row['review_signature'] = card['review_signature']
         return rows
 
     def set_done(self, ids, done):

@@ -121,6 +121,101 @@ class V2AppFlowTests(unittest.TestCase):
             self.assertIsNotNone(self.app._select_transfer(kind='text', text=text))
         self.assertEqual(choose.call_count, 1)
 
+    def test_unlinked_schedule_uses_saved_source_and_keeps_cleared_date_absent(self):
+        source = SOURCE + '\n추가 설명회는 2026. 11. 3.이다.'
+        self.finish_request(self.prepare_request(source))
+        self.assertIn('2026. 11. 3.', self.app.result_text.get('1.0', 'end-1c'))
+        self.app.card_panel.variables['deadline'].set('')
+        self.assertTrue(self.app.card_panel.save_selected())
+        self.app.generate_card_draft()
+        output = self.app.result_text.get('1.0', 'end-1c')
+        self.assertNotIn('10월 2일', output)
+        self.assertIn('원문 미연결 참고 일정', output)
+        self.assertIn('2026. 11. 3.', output)
+
+    def test_redacted_schedule_draft_does_not_restore_original_hidden_date(self):
+        raw = SOURCE + '\n비공개 일정: 2026. 11. 3.'
+        safe = SOURCE + '\n비공개 일정: [가림1]'
+        self.app._replace_ocr_text(raw, track_change=True)
+        snapshot = make_text_snapshot(safe, original_text=raw)
+        with patch('ui.app.choose_transfer', return_value=snapshot), patch.object(self.app, '_start_worker_operation') as start:
+            self.app.analyze_text(force=True)
+        metadata = start.call_args.args[2]
+        metadata['document'] = sample_document()
+        self.finish_request(metadata)
+        self.assertNotIn('2026. 11. 3.', self.app.result_text.get('1.0', 'end-1c'))
+        self.app.generate_card_draft()
+        self.assertNotIn('2026. 11. 3.', self.app.result_text.get('1.0', 'end-1c'))
+
+    def test_confirmation_change_keeps_late_response_and_edited_draft_stale(self):
+        self.finish_request(self.prepare_request())
+        metadata = self.prepare_request()
+        card = self.app.work_cards.list_cards(self.app.document_id)[0]
+        old_artifact = self.app._current_artifact
+        changed = self.app.work_cards.set_confirmations(card['id'], {'deadline': True}, card['version'])
+        self.assertEqual(changed['version'], card['version'])
+        self.app.card_panel.refresh()
+        before = self.app.result_text.get('1.0', 'end-1c')
+        self.finish_request(metadata)
+        self.assertEqual(self.app.result_text.get('1.0', 'end-1c'), before)
+        late = self.app.work_cards.list_artifacts(self.app.document_id)[0]
+        self.assertIn('지연', late['kind'])
+        self.assertTrue(late['stale'])
+        self.assertEqual(late['review_signatures'], metadata['review_signatures'])
+        self.app._replace_result_text('교사가 기존 초안을 편집', track_change=True)
+        self.assertTrue(self.app._archive_visible_draft())
+        copied = self.app._current_artifact
+        self.assertEqual(copied['review_signatures'], old_artifact['review_signatures'])
+        self.assertTrue(self.app.work_cards.artifact_is_stale(copied))
+
+    def test_unsaved_card_edits_block_reanalysis_and_survive_late_result(self):
+        self.finish_request(self.prepare_request())
+        metadata = self.prepare_request()
+        self.app.card_panel.variables['deadline'].set('10월 6일')
+        before = self.app.result_text.get('1.0', 'end-1c')
+        self.finish_request(metadata)
+        self.assertEqual(self.app.result_text.get('1.0', 'end-1c'), before)
+        self.assertEqual(self.app.card_panel.variables['deadline'].get(), '10월 6일')
+        with patch('ui.app.choose_transfer') as choose, patch.object(self.app, '_start_worker_operation') as start:
+            self.app.analyze_text(force=True)
+            choose.assert_not_called()
+            start.assert_not_called()
+
+    def test_delete_current_task_keeps_unsaved_card_accessible_until_discarded(self):
+        self.finish_request(self.prepare_request())
+        record = self.store.get(self.app.current_task_id)
+        self.app.card_panel.variables['deadline'].set('미저장 날짜')
+        with patch.object(self.app, '_selected_task_record', return_value=record), patch('ui.app.messagebox.askyesno', return_value=True) as confirm:
+            self.app.delete_selected_task()
+            confirm.assert_not_called()
+            self.assertIsNotNone(self.store.get(record.id))
+            self.assertEqual(self.app.card_panel.variables['deadline'].get(), '미저장 날짜')
+            self.assertTrue(self.app.card_panel.discard_selected(ask=False))
+            self.app.delete_selected_task()
+        self.assertIsNone(self.store.get(record.id))
+        self.assertFalse(self.app.card_panel.has_unsaved_changes)
+        self.assertTrue(self.app._prepare_to_leave_current('합성 검사'))
+
+    def test_draft_freshness_uses_rendered_card_snapshot_not_latest_database(self):
+        self.finish_request(self.prepare_request())
+        original_render = self.app._render_card_output
+        for confirmation_only in (False, True):
+            with self.subTest(confirmation_only=confirmation_only):
+                def render_then_concurrent_edit(cards, mode, version):
+                    text = original_render(cards, mode, version)
+                    card = cards[0]
+                    if confirmation_only:
+                        self.app.work_cards.set_confirmations(card['id'], {'deadline': True}, card['version'])
+                    else:
+                        self.app.work_cards.update_card(card['id'], {'deadline': '10월 9일'}, card['version'])
+                    return text
+                with patch.object(self.app, '_render_card_output', side_effect=render_then_concurrent_edit):
+                    self.app.generate_card_draft()
+                self.assertTrue(self.app.work_cards.artifact_is_stale(self.app._current_artifact))
+        self.app.generate_card_draft()
+        self.assertFalse(self.app.work_cards.artifact_is_stale(self.app._current_artifact))
+        self.assertIn('10월 9일', self.app._current_artifact['content'])
+
     def test_P04_redacted_text_reused_after_reopen_and_restoration_requires_choice(self):
         raw = '합성 비밀: SYNTHETIC-SECRET\n학교 업무'
         safe = '합성 비밀: [가림]\n학교 업무'

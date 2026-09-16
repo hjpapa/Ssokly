@@ -196,6 +196,15 @@ class CardOutputTests(unittest.TestCase):
         card = self.store.update_card(card['id'], {'action': teacher_text}, card['version'])
         self.assertEqual(current_value(card, 'action'), teacher_text)
 
+    def test_confirmed_ai_action_does_not_restore_old_separate_deadline(self):
+        card = self._date_case('2026. 10. 15.', action_text='2026. 10. 15.까지 신청서 제출')
+        self.todos.add_cards([card])
+        card = self.store.confirm_fields(card['id'], ['action'], card['version'])
+        card = self.store.update_card(card['id'], {'deadline': ''}, card['version'])
+        self.assertTrue(card['fields']['action']['confirmed'])
+        self.assertNotIn('2026. 10. 15.', render_current_cards([card], '교직원 메신저'))
+        self.assertNotIn('2026. 10. 15.', self.todos.list()[0]['item'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,11 +1,18 @@
 """Local drafts: copy current card facts exactly, never re-infer dates from OCR."""
 import re
 from services.work_card_store import CARD_FIELDS, FIELD_LABELS
-from services.date_evidence import date_mentions, RELATIVE_DATE
+from services.date_evidence import date_mentions, date_status, source_schedule_entries, RELATIVE_DATE
 
 
 DATE_FIELDS = ('deadline', 'event_date', 'report_date')
 SOFT_DATE_ISSUES = {'연도 미지정', '연도 미기재', '상대 기한: 기준일 확인 필요'}
+PUBLIC_PERSON = re.compile(r'(?<![가-힣])(?:초등학생|중학생|고등학생|학생|학부모|보호자|가정)(?:들|님)?(?:은|는|이|가|에게|와|과)?(?=$|[\s,·/()])')
+STAFF_ACTOR = re.compile(r'교사|담임|교직원|부장|행정|교무|연구부|학생부|학생지원|학생안전|학생생활|교육청|지원청|센터|위원회|학부모회|학생회|담당자|담당교')
+
+
+def is_public_person(value):
+    """Match recipient roles, not organizations which happen to contain 학생."""
+    return bool(PUBLIC_PERSON.search(value)) and not STAFF_ACTOR.search(value)
 
 
 def _action_without_duplicate_dates(card, value):
@@ -27,8 +34,10 @@ def current_value(card, field):
     value = data['value']
     if not value:
         return ''
-    if data['edited'] or data['confirmed']:
+    if data['edited']:
         return value
+    if data['confirmed']:
+        return _action_without_duplicate_dates(card, value) if field == 'action' else value
     evidence = data['evidence']
     issues = data.get('issues', card.get('ai_proposal', {}).get('field_issues', {}).get(field, []))
     if evidence.get('verified') and not evidence.get('stale'):
@@ -55,7 +64,45 @@ def _has_blocking_fact_review(card, values):
     return False
 
 
-def render_current_cards(cards, mode, *, title='업무 정리'):
+def unlinked_source_schedules(cards, source):
+    """Keep unassigned source dates separate from versioned current card facts.
+
+    Covered dates remain covered even after a teacher clears/changes a value.
+    Only verified, current, unambiguous source spans can hide an occurrence;
+    matching date text alone must not hide the same date in another event cell.
+    """
+    entries = source_schedule_entries(source) if source else []
+    covered = set()
+    for card in cards:
+        if card.get('comparison_candidate'):
+            continue
+        for name in ('action', *DATE_FIELDS):
+            field = card.get('fields', {}).get(name) or {}
+            evidence = field.get('evidence') or {}
+            if (not evidence.get('verified') or evidence.get('stale') or evidence.get('ambiguous')
+                    or evidence.get('location_invalid')):
+                continue
+            quote = ''.join(str(evidence.get('quote') or '').split())
+            if not quote:
+                continue
+            for location in evidence.get('locations', []):
+                left, right = location.get('start'), location.get('end')
+                if (not isinstance(left, int) or not isinstance(right, int)
+                        or not 0 <= left < right <= len(source)
+                        or ''.join(source[left:right].split()) != quote):
+                    continue
+                overlaps = [(index, entry) for index, entry in enumerate(entries)
+                            if left < entry['end'] and right > entry['start']]
+                # A broad action quote spanning multiple event columns does not
+                # prove that every neighboring event date belongs to this card.
+                table_cells = {(entry['line'], entry['cell']) for _, entry in overlaps if entry['cell']}
+                if len(table_cells) > 1:
+                    continue
+                covered.update(index for index, _ in overlaps)
+    return [entry for index, entry in enumerate(entries) if index not in covered]
+
+
+def render_current_cards(cards, mode, *, title='업무 정리', source=''):
     cards = [card for card in cards if not card.get('comparison_candidate')]
     values = [{field: current_value(card, field) for field in CARD_FIELDS} for card in cards]
     notice = '현재 불러온 범위 기준입니다. 미확인 붙임·추가 공문은 포함하지 않습니다.'
@@ -65,9 +112,9 @@ def render_current_cards(cards, mode, *, title='업무 정리'):
         internal = re.compile(r'내부|결재|취합|보고|교무|연구부|행정실')
         for value in values:
             audience = value['target']
-            if not re.search(r'학생|학부모|보호자|가정', audience):
+            if not is_public_person(audience):
                 continue
-            public_action = bool(re.search(r'학부모|보호자|학생', value['owner']))
+            public_action = is_public_person(value['owner'])
             if not value['event_date'] and not public_action:
                 continue
             parts = [f"대상: {audience}"]
@@ -131,4 +178,14 @@ def render_current_cards(cards, mode, *, title='업무 정리'):
         return header + '\n## 전달 문구\n업무 안내드립니다.\n' + '\n'.join(row.replace('- [ ] ', '- ') for row in rows) + supplemental
     if mode == '원문 요약':
         return header + f'\n## 업무 요약\n현재 업무 카드 {len(cards)}개를 기준으로 정리했습니다.\n' + '\n'.join(row.replace('- [ ] ', '- ') for row in rows) + supplemental
+    if mode in {'업무 일정·체크리스트', '내 업무 일정·할 일'}:
+        unlinked = unlinked_source_schedules(cards, source)
+        if unlinked:
+            supplemental += '\n\n## 원문 미연결 참고 일정 · 확인 후 업무에 반영\n'
+            supplemental += '아래는 가져온 원문에 있으나 현재 업무 카드와 연결되지 않은 날짜입니다. 확정된 업무나 내 할 일이 아닙니다.\n'
+            for entry in unlinked:
+                position = f"원문 {entry['line']}행" + (f" · {entry['cell']}열" if entry['cell'] else '')
+                issues = date_status(entry['text'])['issues']
+                warning = ' [확인 필요: ' + ' · '.join(issues) + ']' if issues else ''
+                supplemental += f"- {entry['text']} · {entry['context']} ({position}){warning}\n"
     return header + '\n## 일정 메모\n' + ('\n'.join(schedules) or '명시된 일정이 없습니다. 임의 기한은 만들지 않았습니다.') + '\n\n## 체크리스트\n' + '\n'.join(rows) + supplemental

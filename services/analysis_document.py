@@ -12,6 +12,12 @@ FIELD_LABELS = {'action': '해야 할 일', 'owner': '담당', 'target': '대상
                 'deliverable': '제출물', 'destination': '제출처'}
 EVIDENCE_FIELDS = ('owner', 'target', 'condition', 'deadline', 'event_date', 'report_date', 'deliverable', 'destination')
 
+class EvidenceLocation(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    line: int
+    cell: int
+
+
 class FieldEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
     owner: str = ""
@@ -40,6 +46,9 @@ class Action(BaseModel):
     task_type: Literal["학교 업무", "외부 기관 업무", "참고 일정"] = "학교 업무"
     requires_submission: bool = True
     field_evidence: FieldEvidence = Field(default_factory=FieldEvidence)
+    # Locally derived from SourceRef, persisted in the cache but never requested
+    # as another model-generated coordinate/page field.
+    evidence_locations: dict[str, list[EvidenceLocation]] = Field(default_factory=dict)
 
 class AnalysisDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -87,6 +96,7 @@ def strict_schema(model):
         if isinstance(node, dict):
             node.pop('default', None)
             if node.get('type') == 'object':
+                node.get('properties', {}).pop('evidence_locations', None)
                 node['required'] = list(node.get('properties', {}))
                 node['additionalProperties'] = False
             for value in node.values():
@@ -135,12 +145,32 @@ def scope_notice(partial=True, has_actions=False):
     return '분석한 자료에서 제출 업무를 확인하지 못했습니다. 업무가 없다는 확정은 아닙니다.'
 
 
-def _quote_locations(quote, source):
+def _quote_locations(quote, source, selected=None):
     """Local positions only. Multiple matches deliberately remain ambiguous."""
     if not quote or not valid_quote(quote, source):
         return []
     result = []
     wanted = _normalized(quote)
+    if selected:
+        lines = source.splitlines()
+        verified = []
+        for location in selected:
+            data = location.model_dump() if hasattr(location, 'model_dump') else location
+            number, cell = data.get('line', 0), data.get('cell', -1)
+            if not isinstance(number, int) or not isinstance(cell, int) or not 1 <= number <= len(lines) or cell < 0:
+                continue
+            text = lines[number - 1]
+            if cell:
+                cells = text.split('\t')
+                if cell > len(cells):
+                    continue
+                text = cells[cell - 1]
+            if _normalized(text) == wanted:
+                item = {'line': number, 'cell': cell}
+                if item not in verified:
+                    verified.append(item)
+        if verified:
+            return verified
     for number, line in enumerate(source.splitlines(), 1):
         if wanted not in _normalized(line):
             continue
@@ -192,7 +222,19 @@ def action_card_data(action, source=None, *, attachment_available=None):
             verified = False
             if value:
                 problem.append('비제출 업무의 제출 정보 적용 여부 확인')
-        locations = _quote_locations(quote, source)
+        selected = action.evidence_locations.get(field) or (
+            action.evidence_locations.get('action') if quote == action.evidence else None)
+        locations = _quote_locations(quote, source, selected)
+        accepted_locations = []
+        if selected:
+            selected_values = [item.model_dump() if hasattr(item, 'model_dump') else item for item in selected]
+            accepted_locations = [item for item in locations if item in selected_values]
+            if len(accepted_locations) != len(selected_values):
+                problem.append('선택한 원문 위치 확인 필요')
+        if accepted_locations:
+            # Carry the same locally revalidated selection through the payload;
+            # the persistent store independently checks it against its version.
+            payload['evidence_locations'][field] = accepted_locations
         if len(locations) > 1:
             problem.append('동일 근거가 여러 위치에 있음')
         field_data[field] = {'value': payload[field], 'quote': quote, 'verified': verified,

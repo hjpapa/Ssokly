@@ -98,13 +98,13 @@ class WorkCardStoreTests(unittest.TestCase):
         self.assertIn('새 기한', todos.list()[0]['item'])
         self.assertEqual(todos.list()[0]['done'], 1)
 
-    def test_confirmation_is_field_local_and_does_not_stale_artifact(self):
+    def test_confirmation_is_field_local_stales_artifact_without_content_version_change(self):
         artifact = self.store.save_artifact('synthetic-doc', '안내', '초안', {self.card['id']: 1}, 1)
         confirmed = self.store.confirm_fields(self.card['id'], ['deadline'], expected_version=1)
         self.assertTrue(confirmed['fields']['deadline']['confirmed'])
         self.assertFalse(confirmed['fields']['owner']['confirmed'])
         self.assertEqual(confirmed['version'], 1)
-        self.assertFalse(self.store.artifact_is_stale(artifact))
+        self.assertTrue(self.store.artifact_is_stale(artifact))
 
     def test_conflict_does_not_write_any_editor_values(self):
         saved = self.store.update_card(self.card['id'], {'owner': '먼저 저장'}, 1)
@@ -241,6 +241,102 @@ class WorkCardStoreTests(unittest.TestCase):
     def test_legacy_artifact_without_card_versions_is_stale_once_cards_exist(self):
         legacy = self.store.save_artifact('synthetic-doc', '구형 텍스트', '버전 연결 전 초안', {}, 1)
         self.assertTrue(legacy['stale'])
+
+    def test_confirmation_can_be_revoked_and_old_review_snapshot_remains_stale(self):
+        confirmed = self.store.confirm_fields(self.card['id'], ['deadline'], expected_version=1)
+        signatures = self.store.review_signatures('synthetic-doc')
+        self.assertNotEqual(confirmed['review_signature'], self.card['review_signature'])
+        artifact = self.store.save_artifact('synthetic-doc', '안내', '확인 상태 초안', {self.card['id']: 1}, 1, signatures)
+        unconfirmed = self.store.set_confirmations(self.card['id'], {'deadline': False}, 1, confirmed['review_signature'])
+        self.assertFalse(unconfirmed['fields']['deadline']['confirmed'])
+        self.assertEqual(unconfirmed['version'], 1)
+        self.assertTrue(self.store.artifact_is_stale(artifact))
+        late = self.store.save_artifact('synthetic-doc', '늦은 초안', '이전 확인 상태', {self.card['id']: 1}, 1, signatures)
+        self.assertTrue(late['stale'])
+
+    def test_concurrent_confirmation_change_requires_new_comparison(self):
+        self.store.confirm_fields(self.card['id'], ['deadline'], expected_version=1)
+        with self.assertRaises(CardConflictError):
+            self.store.set_confirmations(self.card['id'], {'deadline': False}, 1, self.card['review_signature'])
+        self.assertTrue(self.store.get_card(self.card['id'])['fields']['deadline']['confirmed'])
+
+    def test_no_op_confirmation_does_not_stale_current_review_snapshot(self):
+        confirmed = self.store.confirm_fields(self.card['id'], ['deadline'], expected_version=1)
+        artifact = self.store.save_artifact('synthetic-doc', '안내', '확인 후 초안', {self.card['id']: 1}, 1)
+        repeated = self.store.confirm_fields(self.card['id'], ['deadline'], expected_version=1)
+        self.assertEqual(repeated['review_signature'], confirmed['review_signature'])
+        self.assertFalse(self.store.artifact_is_stale(artifact))
+
+    def test_value_and_confirmation_edit_are_atomic_on_invalid_confirmation(self):
+        with self.assertRaises(TypeError):
+            self.store.update_card(self.card['id'], {'deadline': ''}, 1, confirmation_changes={'deadline': 'false'})
+        unchanged = self.store.get_card(self.card['id'])
+        self.assertEqual(unchanged['deadline'], self.card['deadline'])
+        self.assertEqual(unchanged['version'], 1)
+
+    def test_v1_migration_keeps_cards_and_artifacts_with_backup_and_unknown_review_status(self):
+        artifact = self.store.save_artifact('synthetic-doc', '기존 안내', '이전 내용', {self.card['id']: 1}, 1)
+        with closing(sqlite3.connect(self.store.path)) as db, db:
+            db.execute('DROP TABLE artifact_reviews')
+            db.execute('PRAGMA user_version=1')
+        migrated = WorkCardStore(self.temp.name)
+        self.assertEqual(migrated.get_card(self.card['id'])['deadline'], self.card['deadline'])
+        self.assertEqual(migrated.list_artifacts('synthetic-doc')[0]['content'], '이전 내용')
+        self.assertTrue(migrated.artifact_is_stale(artifact['id']))
+        self.assertEqual(len(list(Path(self.temp.name).glob('work_cards.sqlite3.before-work-cards-*.bak'))), 1)
+        with closing(sqlite3.connect(migrated.path)) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 2)
+
+    def test_v1_backup_failure_never_changes_schema_or_values(self):
+        with closing(sqlite3.connect(self.store.path)) as db, db:
+            db.execute('DROP TABLE artifact_reviews')
+            db.execute('PRAGMA user_version=1')
+        with patch('services.work_card_store.backup_database', side_effect=OSError('synthetic backup failure')):
+            with self.assertRaises(OSError):
+                WorkCardStore(self.temp.name)
+        with closing(sqlite3.connect(self.store.path)) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 1)
+            self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='artifact_reviews'").fetchone())
+            self.assertEqual(db.execute('SELECT count(*) FROM cards').fetchone()[0], 1)
+
+    def test_exact_source_cells_resolve_repeated_quote_without_guessing(self):
+        source = '업무\t기한\n신청서 제출\t2026. 10. 15.\n신청서 제출\t2026. 10. 15.'
+        self.store.ensure_document('cells', source)
+        payload = {'action': '신청서 제출', 'deadline': '2026. 10. 15.', 'evidence': '신청서 제출',
+                   'field_evidence': {'deadline': '2026. 10. 15.'},
+                   'evidence_locations': {'action': [{'line': 2, 'cell': 1}], 'deadline': [{'line': 2, 'cell': 2}]}}
+        card = self.store.merge_analysis('cells', [payload])[0]
+        evidence = card['fields']['deadline']['evidence']
+        self.assertFalse(evidence['ambiguous'])
+        self.assertTrue(evidence['location_verified'])
+        self.assertEqual(evidence['locations'][0]['cell'], 2)
+        self.assertEqual(evidence['locations'][0]['line'], 2)
+        again = self.store.merge_analysis('cells', [payload])[0]
+        self.assertEqual(again['id'], card['id'])
+
+    def test_fabricated_source_cell_does_not_disambiguate_valid_quote(self):
+        source = '신청서 제출\n2026. 10. 15.\n2026. 10. 15.'
+        record = evidence_record('2026. 10. 15.', source, 'cells', 1, [{'line': 1, 'cell': 0}])
+        self.assertTrue(record['ambiguous'])
+        self.assertTrue(record['location_invalid'])
+        self.assertFalse(record['location_verified'])
+
+    def test_todo_uses_current_action_dates_and_shows_stale_source_status(self):
+        payload = proposal(action='2026. 10. 15.까지 신청서 제출')
+        card = self.store.merge_analysis('synthetic-doc', [payload])[0]
+        card = self.store.adopt_card(card['id'], card['version'])
+        todos = PersonalTodoStore(self.temp.name, self.store)
+        todos.add_cards([card])
+        todos.set_done([todos.list()[0]['id']], True)
+        self.store.update_card(card['id'], {'deadline': '2026. 10. 16.'}, card['version'])
+        row = todos.list()[0]
+        self.assertNotIn('2026. 10. 15.', row['item'])
+        self.assertIn('2026. 10. 16.', row['item'])
+        self.assertTrue(row['done'])
+        self.store.ensure_document('synthetic-doc', SOURCE + '\n수정 공문')
+        row = todos.list()[0]
+        self.assertTrue(row['source_stale'])
+        self.assertIn('원문 변경 · 이전 근거 재확인 필요', row['item'])
 
 
 if __name__ == '__main__':

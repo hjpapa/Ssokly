@@ -1669,8 +1669,14 @@ class SsoklyApp(tk.Tk):
         except Exception:
             self.status_var.set('원문 버전 저장 실패 · 화면의 편집 내용은 유지했습니다. 저장 후 다시 시도하세요.')
 
-    def _card_versions(self):
-        return {card['id']: card['version'] for card in self.work_cards.list_cards(self.document_id)
+    def _card_versions(self, cards=None):
+        cards = self.work_cards.list_cards(self.document_id) if cards is None else cards
+        return {card['id']: card['version'] for card in cards
+                if not card['comparison_candidate']}
+
+    def _card_review_signatures(self, cards=None):
+        cards = self.work_cards.list_cards(self.document_id) if cards is None else cards
+        return {card['id']: card['review_signature'] for card in cards
                 if not card['comparison_candidate']}
 
     def _card_changed(self, card):
@@ -1715,7 +1721,8 @@ class SsoklyApp(tk.Tk):
             old = self._current_artifact
             artifact = self.work_cards.save_artifact(self.document_id,
                 (old['kind'].split(' · ')[0] + ' · 교사 편집') if old else self.current_output_mode + ' · 기존 기록',
-                text, old['card_versions'] if old else {}, old['source_version'] if old else source['version'])
+                text, old['card_versions'] if old else {}, old['source_version'] if old else source['version'],
+                review_signatures=(old.get('review_signatures') or {}) if old else {})
             self._activate_artifact(artifact)
             return True
         except Exception:
@@ -1727,7 +1734,7 @@ class SsoklyApp(tk.Tk):
             messagebox.showinfo('처리 중', '현재 AI 작업이 끝나거나 취소한 뒤 새 초안을 만들어 주세요.')
             return
         if self.card_panel.has_unsaved_changes:
-            messagebox.showinfo('카드 저장 필요', '편집한 업무 카드를 먼저 저장해 주세요. 입력값은 유지했습니다.')
+            messagebox.showinfo('카드 저장 필요', '업무 카드의 수정 저장 또는 편집 취소·현재값 사용을 먼저 선택해 주세요. 입력값은 유지했습니다.')
             return
         try:
             source = self._sync_work_source()
@@ -1738,7 +1745,8 @@ class SsoklyApp(tk.Tk):
             if not self._archive_visible_draft():
                 return
             content = self._render_card_output(cards, mode, source['version'])
-            artifact = self.work_cards.save_artifact(self.document_id, mode, content, self._card_versions(), source['version'])
+            artifact = self.work_cards.save_artifact(self.document_id, mode, content, self._card_versions(cards), source['version'],
+                review_signatures=self._card_review_signatures(cards))
             self._activate_artifact(artifact)
             self._finish_analysis(content, mode)
             self._refresh_artifact_status()
@@ -1800,8 +1808,10 @@ class SsoklyApp(tk.Tk):
                 return '# 원문 요약\n\n' + state['analysis_summary'] + '\n\n불러온 원문 범위 기준입니다. 카드의 교사 수정값은 새 업무 초안에 반영됩니다.'
             return '# 원문 요약\n\n원문이 바뀌었거나 아직 요약하지 않았습니다. 업무 카드의 ‘AI로 업무 추출 / 재분석’을 실행해 주세요.\n이전 요약과 초안은 이력에서 볼 수 있습니다.'
         # The saved task title may be an OCR first line containing an old date.
-        # Factual dates in new drafts come only from the versioned card fields.
-        return render_current_cards(cards, mode, title='학교 업무 정리')
+        # Linked facts use current card fields. Unlinked source dates stay in a
+        # separate reference section, using the exact saved input (safe if redacted).
+        source = self.work_cards.get_document(self.document_id, source_version)
+        return render_current_cards(cards, mode, title='학교 업무 정리', source=source['text'] if source else '')
 
     def analyze_text(self, output_mode: str = DEFAULT_OUTPUT_MODE, *, force=False) -> None:
         if self._active_operation_id is not None:
@@ -1818,6 +1828,10 @@ class SsoklyApp(tk.Tk):
 
         if self.work_cards.list_cards(self.document_id) and not force:
             self.generate_card_draft(output_mode)
+            return
+
+        if self.card_panel.has_unsaved_changes:
+            messagebox.showinfo('카드 저장 필요', '업무 카드의 수정 저장 또는 편집 취소·현재값 사용을 먼저 선택해 주세요. 입력값은 유지했습니다.')
             return
         snapshot = self._select_transfer(kind="text", text=text)
         if snapshot is None:
@@ -1839,9 +1853,11 @@ class SsoklyApp(tk.Tk):
         revisions = (self._source_revision, self._result_revision)
         cancel_event = threading.Event()
         self._analysis_metrics = {}
+        card_snapshot = self.work_cards.list_cards(self.document_id)
         metadata = {"output_mode": output_mode, "document_id": self.document_id,
                     "source_version": source['version'], "source_text": snapshot.text,
-                    "card_versions": self._card_versions(), "transfer_snapshot": snapshot}
+                    "card_versions": self._card_versions(card_snapshot), "review_signatures": self._card_review_signatures(card_snapshot),
+                    "transfer_snapshot": snapshot}
         self.notebook.select(self.result_tab)
         self.stream_preview.pack(fill=tk.X, before=self.result_text, pady=(8, 0))
         self._set_stream_preview("원문에서 할 일과 근거를 추출하고 있습니다...")
@@ -2193,7 +2209,8 @@ class SsoklyApp(tk.Tk):
                     if succeeded and kind == 'analysis' and metadata.get('document_id'):
                         try:
                             self.work_cards.save_artifact(metadata['document_id'], '지연 응답 · 미적용', str(payload),
-                                metadata.get('card_versions', {}), metadata['source_version'])
+                                metadata.get('card_versions', {}), metadata['source_version'],
+                                review_signatures=metadata.get('review_signatures', {}))
                         except Exception:
                             pass  # Abandoned responses never overwrite the active workspace.
                     continue
@@ -2274,13 +2291,16 @@ class SsoklyApp(tk.Tk):
                     and operation_revisions[1] != self._result_revision
                 )
                 card_changed = (kind == 'analysis' and 'card_versions' in metadata
-                    and metadata['card_versions'] != self._card_versions())
+                    and (metadata['card_versions'] != self._card_versions()
+                         or metadata.get('review_signatures', {}) != self._card_review_signatures()
+                         or self.card_panel.has_unsaved_changes))
                 if source_changed or (kind in ("analysis", "diagram") and result_changed) or card_changed:
                     if kind == 'analysis' and metadata.get('document_id'):
                         try:
                             self._store_analysis_cards(metadata, late=True)
                             self.work_cards.save_artifact(metadata['document_id'], '지연 응답 · 이전 입력 기반', str(payload),
-                                metadata['card_versions'], metadata['source_version'])
+                                metadata['card_versions'], metadata['source_version'],
+                                review_signatures=metadata.get('review_signatures', {}))
                             self.card_panel.refresh()
                             self._refresh_artifact_status()
                         except Exception:
@@ -2308,7 +2328,8 @@ class SsoklyApp(tk.Tk):
                             cards = self.work_cards.list_cards(self.document_id)
                             payload = self._render_card_output(cards, mode, metadata['source_version'])
                             artifact = self.work_cards.save_artifact(self.document_id, mode, payload,
-                                self._card_versions(), metadata['source_version'])
+                                self._card_versions(cards), metadata['source_version'],
+                                review_signatures=self._card_review_signatures(cards))
                             self._activate_artifact(artifact)
                         except Exception:
                             self.status_var.set('업무 카드·초안 저장 실패 · 이전 화면을 유지했습니다.')
@@ -3983,7 +4004,7 @@ class SsoklyApp(tk.Tk):
 
     def _prepare_to_leave_current(self, reason: str) -> bool:
         if self.card_panel.has_unsaved_changes:
-            messagebox.showinfo('업무 카드 편집 중', '이동·종료 전에 업무 카드의 수정 저장을 눌러 주세요. 저장 실패 시 편집값을 유지합니다.')
+            messagebox.showinfo('업무 카드 편집 중', '이동·종료 전에 업무 카드의 수정 저장 또는 편집 취소·현재값 사용을 선택해 주세요. 저장 실패 시 편집값을 유지합니다.')
             self.notebook.select(self.cards_tab)
             return False
         discard_operation = False
@@ -4272,6 +4293,10 @@ class SsoklyApp(tk.Tk):
         record = self._selected_task_record()
         if record is None:
             messagebox.showinfo("업무 보관함", "삭제할 업무를 선택해 주세요.")
+            return
+        if record.id == self.current_task_id and self.card_panel.has_unsaved_changes:
+            # Deleting first would orphan the editor draft in an empty workspace.
+            self._prepare_to_leave_current('업무 삭제')
             return
         if not messagebox.askyesno(
             "업무 삭제",

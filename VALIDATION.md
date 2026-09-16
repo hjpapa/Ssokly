@@ -9,9 +9,15 @@
 - V2 기준점 커밋 전 `.venv\Scripts\python.exe -m unittest discover -s tests -q` 재실행: **261개 통과, 25.883초**, 건너뜀 없음. 합성/mock, 실제 API 호출 없음.
 - Git fetch 후 기준 HEAD와 `origin/main` 차이 0/0. 변경 대상의 키/토큰/개인키 패턴 검사에서 일치 없음. LF/CRLF 안내와 기존 Pillow 경고는 기능 실패가 아님.
 - 전송 범위 보완: `.venv\Scripts\python.exe -m unittest tests.test_transfer_policy tests.test_v2_transfer_integration tests.test_v2_app_flow -q` **55개 통과, 3.988초**. 글자/낱말 재조합 거부, 가림 편집 재선택, 유사 식별자 오탐, 중간 수동 편집, 추가 가림 보호값 유지, mock 분석 요청에서 제외/유지값 확인. 실제 API 없음.
+- 후속 날짜·카드·실제 창 보완 최종 전체: `.venv\Scripts\python.exe -m unittest discover -s tests -q` **321개 통과, 31.967초, 건너뜀 없음**. 중간 317개 통과 뒤 감사에서 추가 결함을 발견해 4개 회귀를 추가한 최종 코드로 재실행했습니다.
+- 신규 `.venv\Scripts\python.exe tools/verify_v2_release.py`: **161개 통과, 13.110초, failures/errors/skipped/network_attempts 모두 0**. 소켓 연결/DNS를 차단하고 통신 시도는 예외를 잡아도 실패 처리합니다. 별도 `test_v2_release_gate` 3개로 통신 시도·건너뜀의 실패 판정/복원 검증. 중간 157개 결과와 최종 결과를 구분합니다.
+- 날짜/출처: 기간 끝·오후 시간/24시간 표기 비교·미해석 표현 보존·SourceRef 좌표 유지·반복 날짜 셀 구분·잘못된 위치 경고. 누락 일정 참고 구역, 수정/삭제 날짜 미복원, 가린 원문 버전 사용, 참고 일정의 체크리스트/공개 안내 제외.
+- 저장/복구: 확인 체크 철회, 확인 상태만 변경할 때 이전 초안 표시, 지연 응답/기존 초안 편집본의 이전 서명 보존, 렌더링 중 동시 수정의 낡은 본문 표시, 충돌 재비교·선택 적용·재충돌 보호, 삭제 전 미저장 카드 차단, DB 백업·가산 업그레이드와 구버전 초안 보존.
+- 실제 앱 Tk geometry 검사: 컴팩트 **680×720** ↔ 일반 **1180×760**(일반 모드 기존 최소 높이) 전환. 입력 12개·하단 버튼 7개, 스크롤 처음/끝 근거 접근, 저장·미저장 종료 차단→취소→종료 확인. 독립 패널 시험에서 놓친 실제 앱 버튼 가림을 재현 후 수정했습니다. 네이티브 마우스 손 조작·화면 육안 검수나 배율 전수 시험은 아닙니다.
+- 기존 `.venv\Scripts\python.exe tools/verify_release.py` 최종 `passed: true`, `live: false`. `pip check`, `compileall -q services ui tests tools`, `git diff --check` 통과. 기존 Pillow 경고·의도적 재검토 실패 로그는 유지됩니다.
 - 후속 결함 점검과 개선의 시험 결과는 아래 이력을 덮지 않고 이 절에 추가합니다.
 
-## V2 1차 — 2026-09-17 (현재 작업 트리)
+## V2 1차 — 2026-09-17 (기준점 `7b1be36` 이전 검증 기록)
 
 합성 문자열·이미지·임시 SQLite 저장소와 OpenAI mock만 사용했습니다. 실제 공문·사용자 DB·실제 키를 검증 입력으로 사용하거나 유료 API를 호출하지 않았습니다. 기존 157개 시험 기록은 아래에 보존하며 이번 결과와 구분합니다.
 

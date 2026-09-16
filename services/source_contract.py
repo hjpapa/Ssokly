@@ -51,6 +51,10 @@ def resolve_action(action, source):
     data['evidence'] = resolve_ref(action.evidence, source)
     data['field_evidence'] = {key: resolve_ref(getattr(action.field_evidence, key), source)
                               for key in EVIDENCE_FIELDS}
+    # Replace any externally supplied metadata: only valid refs actually used
+    # to copy these passages become local position hints.
+    refs = {'action': action.evidence, **{key: getattr(action.field_evidence, key) for key in EVIDENCE_FIELDS}}
+    data['evidence_locations'] = {key: [ref.model_dump()] for key, ref in refs.items() if resolve_ref(ref, source)}
     # Cards need the raw proposal for review. Legacy rendering may suppress
     # inapplicable submission fields later, but resolving a quote is not editing.
     return Action.model_validate(data)

@@ -50,7 +50,7 @@ def _normalized_with_offsets(text):
     return ''.join(chars), offsets
 
 
-def evidence_record(quote, text, document_id, source_version):
+def evidence_record(quote, text, document_id, source_version, selected_locations=None):
     """Verify a quotation locally; derive locations instead of trusting AI pages."""
     quote = str(quote or '')
     normalized, offsets = _normalized_with_offsets(text)
@@ -62,17 +62,51 @@ def evidence_record(quote, text, document_id, source_version):
             left, right = offsets[pos], offsets[pos + len(needle) - 1] + 1
             matches.append({'start': left, 'end': right, 'line': text.count('\n', 0, left) + 1})
             start = pos + 1
+    selected, invalid = [], False
+    if selected_locations:
+        lines = text.splitlines(keepends=True)
+        for location in selected_locations:
+            line, cell = location.get('line'), location.get('cell')
+            if not isinstance(line, int) or not isinstance(cell, int) or line < 1 or line > len(lines) or cell < 0:
+                invalid = True
+                continue
+            raw = lines[line - 1].rstrip('\r\n')
+            left = sum(len(item) for item in lines[:line - 1])
+            if cell:
+                cells = raw.split('\t')
+                if cell > len(cells):
+                    invalid = True
+                    continue
+                left += sum(len(item) + 1 for item in cells[:cell - 1])
+                raw = cells[cell - 1]
+            right = left + len(raw)
+            local = [dict(match, cell=cell) for match in matches if left <= match['start'] and match['end'] <= right]
+            if not local:
+                invalid = True
+            selected.extend(local)
+        if selected and not invalid:
+            matches = sorted([dict(items) for items in {tuple(sorted(item.items())) for item in selected}],
+                             key=lambda item: (item['start'], item['end'], item.get('cell', 0)))
     return {
         'quote': quote, 'document_id': document_id, 'source_version': source_version,
         'verified': bool(matches), 'ambiguous': len(matches) > 1,
-        'locations': matches, 'stale': False,
+        'locations': matches, 'stale': False, 'location_verified': bool(selected) and not invalid,
+        'location_invalid': invalid,
     }
 
 
 def render_card_item(card):
-    details = [f'{FIELD_LABELS[name]}: {card.get(name, "")}' for name in CARD_FIELDS
-               if name != 'action' and card.get(name)]
-    return '\n'.join([card.get('action') or '업무 내용 미지정', *details])
+    from services.card_outputs import current_value
+    values = {name: current_value(card, name) for name in CARD_FIELDS}
+    details = [f'{FIELD_LABELS[name]}: {values[name]}' for name in CARD_FIELDS
+               if name != 'action' and values[name]]
+    if card.get('source_stale'):
+        details.append('원문 변경 · 이전 근거 재확인 필요')
+    return '\n'.join([values['action'] or '업무 내용 미지정', *details])
+
+
+def _review_signature(fields):
+    return hashlib.sha256(_json({name: bool(field['confirmed']) for name, field in fields.items()}).encode()).hexdigest()
 
 
 class WorkCardStore:
@@ -84,12 +118,12 @@ class WorkCardStore:
         if self.path.exists():
             with closing(sqlite3.connect(self.path)) as db:
                 version = db.execute('PRAGMA user_version').fetchone()[0]
-                if version > 1:
+                if version > 2:
                     raise ValueError('새 버전 업무 데이터입니다. 앱 업데이트 후 열어 주세요.')
-                if version == 0:
+                if version < 2:
                     backup_database(self.path)
         with self._db(write=True) as db:
-            db.executescript('''
+            schema = '''
                 CREATE TABLE IF NOT EXISTS documents (
                     id TEXT PRIMARY KEY, version INTEGER NOT NULL,
                     text TEXT NOT NULL, source_kind TEXT NOT NULL, source_ref TEXT NOT NULL,
@@ -110,8 +144,13 @@ class WorkCardStore:
                     id TEXT PRIMARY KEY, document_id TEXT NOT NULL, kind TEXT NOT NULL,
                     content TEXT NOT NULL, card_versions_json TEXT NOT NULL,
                     source_version INTEGER NOT NULL, created_at TEXT NOT NULL);
-                PRAGMA user_version=1;
-            ''')
+                CREATE TABLE IF NOT EXISTS artifact_reviews (
+                    artifact_id TEXT PRIMARY KEY, signatures_json TEXT NOT NULL);
+                PRAGMA user_version=2;
+            '''
+            for statement in schema.split(';'):
+                if statement.strip():
+                    db.execute(statement)
 
     @contextmanager
     def _db(self, write=False):
@@ -154,6 +193,7 @@ class WorkCardStore:
         card = dict(row)
         card['fields'] = json.loads(card.pop('fields_json'))
         card['ai_proposal'] = json.loads(card.pop('proposal_json'))
+        card['review_signature'] = _review_signature(card['fields'])
         card['comparison_candidate'] = bool(card['comparison_candidate'])
         card['source_stale'] = current_source_version != card['source_version']
         for name, field in card['fields'].items():
@@ -191,9 +231,14 @@ class WorkCardStore:
             quote = checked.get('quote') or (evidence if name == 'action' else quotes.get(name, '') or evidence)
             if isinstance(quote, dict):
                 quote = quote.get('quote', '')
-            record = evidence_record(quote, source, document_id, source_version)
+            locations = (action.get('evidence_locations') or {}).get(name)
+            record = evidence_record(quote, source, document_id, source_version, locations)
             record['quote_verified'] = record['verified']
             issues = list(checked.get('issues') or (action.get('field_issues') or {}).get(name) or [])
+            if record['location_invalid']:
+                issues.append('선택한 원문 위치 확인 필요')
+            if record['location_verified'] and not record['ambiguous']:
+                issues = [issue for issue in issues if issue != '동일 근거가 여러 위치에 있음']
             if 'verified' in checked:
                 record['verified'] = record['verified'] and bool(checked['verified'])
             elif name in ('deadline', 'event_date', 'report_date'):
@@ -218,6 +263,9 @@ class WorkCardStore:
         exact = {'action': action.get('action', ''),
                  'quotes': {key: value['evidence']['quote'] for key, value in fields.items()},
                  'task_type': action.get('task_type', '학교 업무')}
+        if any(field['evidence'].get('location_verified') for field in fields.values()):
+            exact['locations'] = {name: [{'line': item['line'], 'cell': item.get('cell', 0)} for item in field['evidence']['locations']]
+                                  for name, field in fields.items() if field['evidence'].get('location_verified')}
         return hashlib.sha256(_json(exact).encode()).hexdigest()
 
     def merge_analysis(self, document_id, actions, source_version=None):
@@ -266,8 +314,10 @@ class WorkCardStore:
                     result_ids.append(key)
         return [self.get_card(key) for key in result_ids]
 
-    def update_card(self, card_id, changes, expected_version):
+    def update_card(self, card_id, changes, expected_version, *, confirmation_changes=None, expected_review_signature=None):
+        confirmation_changes = confirmation_changes or {}
         unknown = set(changes) - set(CARD_FIELDS)
+        unknown |= set(confirmation_changes) - set(CARD_FIELDS)
         if unknown:
             raise ValueError('수정할 수 없는 업무 필드입니다: ' + ', '.join(sorted(unknown)))
         with self._db(write=True) as db:
@@ -277,29 +327,43 @@ class WorkCardStore:
             if row['version'] != expected_version:
                 raise CardConflictError('다른 창에서 업무가 변경되었습니다. 편집값을 보관하고 현재 업무와 비교하세요.')
             fields = json.loads(row['fields_json'])
+            if expected_review_signature is not None and _review_signature(fields) != expected_review_signature:
+                raise CardConflictError('확인 상태가 변경되었습니다. 현재 값과 비교한 뒤 다시 저장하세요.')
+            before_content = {name: {key: value for key, value in field.items() if key != 'confirmed'} for name, field in fields.items()}
             for name, value in changes.items():
                 if not isinstance(value, str):
                     raise TypeError('업무 수정값은 문자열이어야 합니다.')
                 fields[name].update(value=value, edited=True, confirmed=False)
+            for name, confirmed in confirmation_changes.items():
+                if not isinstance(confirmed, bool):
+                    raise TypeError('확인 상태는 참/거짓이어야 합니다.')
+                fields[name]['confirmed'] = confirmed
             if fields != json.loads(row['fields_json']):
-                db.execute('UPDATE cards SET fields_json=?,version=version+1,updated_at=? WHERE id=?',
-                           (_json(fields), _now(), card_id))
+                after_content = {name: {key: value for key, value in field.items() if key != 'confirmed'} for name, field in fields.items()}
+                db.execute('UPDATE cards SET fields_json=?,version=version+?,updated_at=? WHERE id=?',
+                           (_json(fields), int(before_content != after_content), _now(), card_id))
         return self.get_card(card_id)
 
-    def confirm_fields(self, card_id, names, expected_version=None):
-        if set(names) - set(CARD_FIELDS):
-            raise ValueError('확인할 수 없는 업무 필드입니다.')
-        with self._db(write=True) as db:
-            row = db.execute('SELECT * FROM cards WHERE id=?', (card_id,)).fetchone()
-            if row is None:
+    def set_confirmations(self, card_id, changes, expected_version=None, expected_review_signature=None):
+        if expected_version is None:
+            card = self.get_card(card_id)
+            if card is None:
                 raise KeyError(card_id)
-            if expected_version is not None and row['version'] != expected_version:
-                raise CardConflictError('업무가 변경되어 확인 상태를 저장하지 않았습니다.')
-            fields = json.loads(row['fields_json'])
-            for name in names:
-                fields[name]['confirmed'] = True
-            db.execute('UPDATE cards SET fields_json=?,updated_at=? WHERE id=?', (_json(fields), _now(), card_id))
-        return self.get_card(card_id)
+            expected_version = card['version']
+        return self.update_card(card_id, {}, expected_version, confirmation_changes=changes,
+                                expected_review_signature=expected_review_signature)
+
+    def confirm_fields(self, card_id, names, expected_version=None, expected_review_signature=None):
+        return self.set_confirmations(card_id, {name: True for name in names}, expected_version, expected_review_signature)
+
+    def review_signatures(self, document_id):
+        with self._db() as db:
+            return self._review_signatures(db, document_id)
+
+    @staticmethod
+    def _review_signatures(db, document_id):
+        return {row['id']: _review_signature(json.loads(row['fields_json'])) for row in db.execute(
+            'SELECT id,fields_json FROM cards WHERE document_id=? AND comparison_candidate=0', (document_id,))}
 
     def adopt_card(self, card_id, expected_version):
         """Explicitly accept a comparison as a separate task; never copy old edits."""
@@ -313,7 +377,7 @@ class WorkCardStore:
                 db.execute('UPDATE cards SET comparison_candidate=0,version=version+1,updated_at=? WHERE id=?', (_now(), card_id))
         return self.get_card(card_id)
 
-    def save_artifact(self, document_id, kind, content, card_versions, source_version):
+    def save_artifact(self, document_id, kind, content, card_versions, source_version, review_signatures=None):
         key = uuid.uuid4().hex
         with self._db(write=True) as db:
             if db.execute('SELECT 1 FROM source_versions WHERE document_id=? AND version=?',
@@ -325,6 +389,8 @@ class WorkCardStore:
                     raise ValueError('결과물의 업무 버전이 올바르지 않습니다.')
             db.execute('INSERT INTO artifacts VALUES (?,?,?,?,?,?,?)',
                        (key, document_id, str(kind), str(content), _json(card_versions), source_version, _now()))
+            signatures = self._review_signatures(db, document_id) if review_signatures is None else review_signatures
+            db.execute('INSERT INTO artifact_reviews VALUES (?,?)', (key, _json(signatures)))
         return next(item for item in self.list_artifacts(document_id) if item['id'] == key)
 
     def list_artifacts(self, document_id):
@@ -333,6 +399,8 @@ class WorkCardStore:
             for row in db.execute('SELECT * FROM artifacts WHERE document_id=? ORDER BY rowid DESC', (document_id,)):
                 item = dict(row)
                 item['card_versions'] = json.loads(item.pop('card_versions_json'))
+                review = db.execute('SELECT signatures_json FROM artifact_reviews WHERE artifact_id=?', (item['id'],)).fetchone()
+                item['review_signatures'] = json.loads(review['signatures_json']) if review else None
                 item['stale'] = self._artifact_stale(db, item)
                 result.append(item)
             return result
@@ -345,6 +413,9 @@ class WorkCardStore:
         active_ids = {row['id'] for row in db.execute(
             'SELECT id FROM cards WHERE document_id=? AND comparison_candidate=0', (artifact['document_id'],))}
         if active_ids != set(artifact['card_versions']):
+            return True
+        review = db.execute('SELECT signatures_json FROM artifact_reviews WHERE artifact_id=?', (artifact['id'],)).fetchone()
+        if review is None or json.loads(review['signatures_json']) != WorkCardStore._review_signatures(db, artifact['document_id']):
             return True
         for key, version in artifact['card_versions'].items():
             current = db.execute('SELECT version FROM cards WHERE id=?', (key,)).fetchone()
