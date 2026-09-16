@@ -114,6 +114,49 @@ class V2AppFlowTests(unittest.TestCase):
         self.assertIn('지연', late['kind'])
         self.assertTrue(late['stale'])
 
+    def test_restart_between_artifact_and_task_save_keeps_matching_version(self):
+        self.finish_request(self.prepare_request())
+        old = self.app._current_artifact
+        self.app.card_panel.variables['deadline'].set('10월 6일')
+        self.assertTrue(self.app.card_panel.save_selected())
+        saved = self.store.get(self.app.current_task_id)
+        self.app.generate_card_draft()
+        new = self.app._current_artifact
+        self.assertNotEqual(old['content'], new['content'])
+        # Simulate shutdown before the debounced legacy task text save.
+        self.destroy_app()
+        self.app = SsoklyApp(task_store=self.store, capture_store=self.captures)
+        self.app.withdraw()
+        self.app._load_task_record(saved)
+        self.assertEqual(self.app.result_text.get('1.0', 'end-1c'), saved.analysis_text)
+        self.assertEqual(self.app._current_artifact['id'], old['id'])
+        self.assertIn('이전 정보 기반', self.app.artifact_status.get())
+        self.assertIn(new['id'], [item['id'] for item in self.app.work_cards.list_artifacts(saved.id)])
+
+    def test_reopen_unmatched_teacher_text_keeps_text_and_unknown_version(self):
+        from dataclasses import replace
+        self.finish_request(self.prepare_request())
+        saved = self.store.get(self.app.current_task_id)
+        text = '별도로 저장한 합성 수동 초안'
+        self.app._load_task_record(replace(saved, analysis_text=text))
+        self.assertEqual(self.app.result_text.get('1.0', 'end-1c'), text)
+        self.assertIsNone(self.app._current_artifact)
+        self.assertIn('버전 미확인', self.app.artifact_status.get())
+
+    def test_reopen_ambiguous_matching_history_does_not_guess_version(self):
+        self.finish_request(self.prepare_request())
+        saved = self.store.get(self.app.current_task_id)
+        current = self.app._current_artifact
+        card = self.app.work_cards.list_cards(saved.id)[0]
+        card = self.app.work_cards.set_confirmations(card['id'], {'deadline': True}, card['version'])
+        self.app.work_cards.save_artifact(saved.id, current['kind'], current['content'],
+            {card['id']: card['version']}, current['source_version'])
+        self.app.workspace_state.update(saved.id, artifact_id='missing-synthetic-pointer')
+        self.app._load_task_record(saved)
+        self.assertEqual(self.app.result_text.get('1.0', 'end-1c'), saved.analysis_text)
+        self.assertIsNone(self.app._current_artifact)
+        self.assertIn('버전 미확인', self.app.artifact_status.get())
+
     def test_P01_no_repeat_dialog_for_ordinary_business_contact(self):
         text = '업무 문의 교무실 043-000-0000'
         with patch('ui.app.choose_transfer', return_value=make_text_snapshot(text)) as choose:

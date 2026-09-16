@@ -1705,7 +1705,7 @@ class SsoklyApp(tk.Tk):
             except Exception:
                 self.artifact_status.set('결과물 버전을 확인하지 못했습니다. 화면의 내용은 유지됩니다.')
         else:
-            self.artifact_status.set('기존 텍스트 기록 · 카드 버전 연결 전' if self.result_text.get('1.0', 'end-1c').strip() else '')
+            self.artifact_status.set('기존 텍스트 기록 · 카드 버전 미확인' if self.result_text.get('1.0', 'end-1c').strip() else '')
 
     def _activate_artifact(self, artifact):
         self.workspace_state.update(self.document_id, artifact_id=artifact['id'])
@@ -4225,8 +4225,13 @@ class SsoklyApp(tk.Tk):
         try:
             self._sync_work_source()
             artifact_id = self.workspace_state.get(self.document_id).get('artifact_id')
-            self._current_artifact = next((item for item in self.work_cards.list_artifacts(self.document_id)
-                                           if item['id'] == artifact_id), None)
+            artifacts = self.work_cards.list_artifacts(self.document_id)
+            # These stores commit independently. A shutdown can leave the
+            # pointer ahead of the task text; never label an older body current.
+            matching = [item for item in artifacts if item['content'] == record.analysis_text]
+            self._current_artifact = next((item for item in matching if item['id'] == artifact_id), None)
+            if self._current_artifact is None and len(matching) == 1:
+                self._current_artifact = matching[0]
             policy = self._transfer_policy()
             self.transfer_status.set('이전 가림 정책 유지 · 후속 전송도 선택 사본만 사용' if policy and policy.redacted else 'AI 버튼 실행 시 선택 텍스트를 OpenAI로 전송')
         except Exception:

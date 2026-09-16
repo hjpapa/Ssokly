@@ -6,6 +6,14 @@
 
 ## 단계별 후속 검증 — 2026-09-17
 
+### 재시작 후 재개 검증
+
+- 재개 기준 `a575f16`: `.venv\Scripts\python.exe tools/verify_v2_release.py` 161개 통과(14.230초), 실패·건너뜀·통신 시도 0. Git fetch 후 원격 main 차이 0/0.
+- 중간 종료 재현: 초안 이력 저장 후 업무 본문 저장 전에 앱 객체 종료/재생성. 새 회귀 1개는 수정 전 실패(이전 본문에 새 버전 연결), 수정 후 `.venv\Scripts\python.exe -m unittest tests.test_v2_app_flow -q` **22개 통과, 4.729초**. 일치 이력 복구·알 수 없는 본문 보존·다중 후보 미확인 표시 3개 신규 회귀 포함.
+- 모두 합성/mock·임시 저장소. 실제 OS 강제 종료·전원 손실·디스크 손상 시험이나 유료 API는 수행하지 않음.
+
+### 이전 단계별 결과
+
 - V2 기준점 커밋 전 `.venv\Scripts\python.exe -m unittest discover -s tests -q` 재실행: **261개 통과, 25.883초**, 건너뜀 없음. 합성/mock, 실제 API 호출 없음.
 - Git fetch 후 기준 HEAD와 `origin/main` 차이 0/0. 변경 대상의 키/토큰/개인키 패턴 검사에서 일치 없음. LF/CRLF 안내와 기존 Pillow 경고는 기능 실패가 아님.
 - 전송 범위 보완: `.venv\Scripts\python.exe -m unittest tests.test_transfer_policy tests.test_v2_transfer_integration tests.test_v2_app_flow -q` **55개 통과, 3.988초**. 글자/낱말 재조합 거부, 가림 편집 재선택, 유사 식별자 오탐, 중간 수동 편집, 추가 가림 보호값 유지, mock 분석 요청에서 제외/유지값 확인. 실제 API 없음.
