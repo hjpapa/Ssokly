@@ -58,6 +58,32 @@ class CaptureDeskTests(unittest.TestCase):
         self.app._autosave_id = None
         self.app._autosave()
 
+    def test_library_details_filter_and_reopen(self):
+        first = self.document('학교 행사 안내', title='첫 자료')
+        second = self.document('회의 내용', title='둘째 자료')
+        self.open(first)
+        self.app.labels_var.set('행사, 교무')
+        self.app.memo_var.set('회신 전에 담당자 확인')
+        self.assertTrue(self.app.flush_edits())
+        self.assertEqual(self.library.get_document(first['id'])['labels'], ['행사', '교무'])
+        self.app.label_filter.set('행사')
+        self.app.refresh_library()
+        self.assertEqual(self.app.document_tree.get_children(), (first['id'],))
+        self.app.label_filter.set('전체 라벨')
+        self.assertTrue(self.app.open_document(second['id']))
+        self.assertTrue(self.app.open_document(first['id']))
+        self.assertEqual(self.app.memo_var.get(), '회신 전에 담당자 확인')
+        self.app.query.set('담당자 확인')
+        self.assertIsNotNone(self.app._refresh_id)  # Variable updates work without a key-release event.
+        self.app.search_button.invoke()
+        self.assertIsNone(self.app._refresh_id)
+        self.assertEqual(self.app.document_tree.get_children(), (first['id'],))
+        self.assertEqual(self.app.library_count.get(), '검색 결과 1건')
+        self.app.search_entry.delete(0, 'end')
+        self.app.search_entry.insert(0, '회의 내용')
+        self.app._run_search()
+        self.assertEqual(self.app.document_tree.get_children(), (second['id'],))
+
     def test_new_text_document_and_autosave_explicit_empty_value(self):
         self.app.new_text_document()
         self.app.update()

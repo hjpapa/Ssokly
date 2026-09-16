@@ -56,7 +56,7 @@ class CaptureDeskApp(tk.Tk):
         self.configure(bg='#f5f7f8')
         style = ttk.Style(self)
         style.configure('Desk.TButton', padding=(9, 6))
-        style.configure('Desk.Treeview', rowheight=62)
+        style.configure('Desk.Treeview', rowheight=76)
         self.option_add('*Font', ('Malgun Gothic', 10))
         self._build_ui()
         self.thumbnails = ThumbnailCache(self)
@@ -122,12 +122,27 @@ class CaptureDeskApp(tk.Tk):
         self.main_split.pack(fill='both', expand=True, padx=12, pady=(0, 8))
         self.main_split.bind('<Configure>', self._schedule_layout)
         self.main_split.bind('<ButtonRelease-1>', self._schedule_layout)
-        self.library_panel = ttk.Frame(self.main_split, width=230)
+        self.library_panel = ttk.Frame(self.main_split, width=250)
         self.main_split.add(self.library_panel, weight=0)
+        ttk.Label(self.library_panel, text='자료 라이브러리', font=('Malgun Gothic', 11, 'bold')).pack(anchor='w', pady=(0, 5))
+        ttk.Label(self.library_panel, text='자료 검색 · 제목/본문/라벨/메모',
+                  foreground='#475467', wraplength=220).pack(anchor='w')
         self.query = tk.StringVar()
-        search = ttk.Entry(self.library_panel, textvariable=self.query)
-        search.pack(fill='x', pady=(0, 5))
-        search.bind('<KeyRelease>', self._search_changed)
+        search_bar = ttk.Frame(self.library_panel)
+        search_bar.pack(fill='x', pady=(3, 5))
+        self.search_entry = ttk.Entry(search_bar, textvariable=self.query)
+        self.search_entry.pack(side='left', fill='x', expand=True)
+        self.search_entry.bind('<Return>', lambda _event: self._run_search())
+        self.search_button = ttk.Button(search_bar, text='검색', width=5, command=self._run_search)
+        self.search_button.pack(side='right', padx=(5, 0))
+        self.query.trace_add('write', self._search_changed)
+        self.label_filter = tk.StringVar(value='전체 라벨')
+        self.label_picker = ttk.Combobox(self.library_panel, textvariable=self.label_filter,
+                                        values=('전체 라벨',), state='readonly')
+        self.label_picker.pack(fill='x', pady=(0, 5))
+        self.label_picker.bind('<<ComboboxSelected>>', lambda _event: self.refresh_library())
+        self.library_count = tk.StringVar(value='')
+        ttk.Label(self.library_panel, textvariable=self.library_count, foreground='#667085').pack(anchor='w')
         self.show_trash = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.library_panel, text='휴지통', variable=self.show_trash,
                         command=self.refresh_library).pack(anchor='w')
@@ -157,6 +172,19 @@ class CaptureDeskApp(tk.Tk):
         self.adopt_button.pack(side='right', padx=5)
         self.view_button = ttk.Button(identity, text='원본 / 텍스트', command=self.toggle_compact_view)
         self.view_button.pack(side='right', padx=3)
+        details = ttk.Frame(self.workspace, padding=(10, 0, 0, 7))
+        details.pack(fill='x')
+        ttk.Label(details, text='라벨 (쉼표 구분)').grid(row=0, column=0, sticky='w', padx=(0, 6))
+        self.labels_var = tk.StringVar()
+        self.labels_entry = ttk.Entry(details, textvariable=self.labels_var)
+        self.labels_entry.grid(row=0, column=1, sticky='ew', padx=(0, 10))
+        self.labels_entry.bind('<KeyRelease>', lambda _event: self._schedule_save())
+        ttk.Label(details, text='메모').grid(row=1, column=0, sticky='w', padx=(0, 6), pady=(5, 0))
+        self.memo_var = tk.StringVar()
+        self.memo_entry = ttk.Entry(details, textvariable=self.memo_var)
+        self.memo_entry.grid(row=1, column=1, sticky='ew', padx=(0, 10), pady=(5, 0))
+        self.memo_entry.bind('<KeyRelease>', lambda _event: self._schedule_save())
+        details.columnconfigure(1, weight=1)
         self.work_split = ttk.Panedwindow(self.workspace, orient='horizontal')
         self.work_split.pack(fill='both', expand=True, padx=(10, 0))
         self.work_split.bind('<Configure>', self._schedule_layout)
@@ -183,7 +211,7 @@ class CaptureDeskApp(tk.Tk):
         self.ai_panel = ttk.Frame(self.editor_tabs)
         self.editor_tabs.add(self.text_panel, text='텍스트')
         self.editor_tabs.add(self.table_panel, text='표')
-        self.editor_tabs.add(self.ai_panel, text='AI 정리')
+        self.editor_tabs.add(self.ai_panel, text='업무 실행')
         self.editor_tabs.bind('<<NotebookTabChanged>>', self._tab_changed)
         copies = ttk.Frame(self.text_panel)
         self._copy_bar = copies
@@ -254,29 +282,44 @@ class CaptureDeskApp(tk.Tk):
             self.status.set('보관함을 읽지 못했습니다. 기존 화면은 유지합니다.')
             return
         self._listing = {item['id']: item for item in records}
+        available_labels = sorted({label for item in records for label in item.get('labels', [])}, key=str.casefold)
+        current_filter = self.label_filter.get()
+        self.label_picker.configure(values=('전체 라벨', *sorted(set(available_labels + ([current_filter] if current_filter != '전체 라벨' else [])), key=str.casefold)))
+        if current_filter != '전체 라벨':
+            records = [item for item in records if current_filter in item.get('labels', [])]
+        self.library_count.set(f"{'검색 결과' if self.query.get().strip() else '자료'} {len(records)}건")
         self.document_tree.delete(*self.document_tree.get_children())
         self._library_photos = {}
         for item in records[:self._visible_count]:
             photo = self.thumbnails.get(item.get('thumbnail_path'), (52, 44)) if item.get('thumbnail_path') else None
             detail = f"{str(item.get('updated_at', ''))[:10]} · {item['page_count']}쪽"
+            context = []
             if item.get('legacy'):
-                detail += ' · 기존 기록'
+                context.append('미분류 캡처' if str(item['id']).startswith('capture:') else '기존 기록')
+            if item.get('labels'):
+                context.append('#' + item['labels'][0][:12])
             if item.get('recovery_required'):
-                detail += ' · 복구 필요'
+                context.append('복구 필요')
             opts = {'image': photo} if photo else {}
             if photo:
                 self._library_photos[item['id']] = photo
-            self.document_tree.insert('', 'end', iid=item['id'], text=f"{item['title']}\n{detail}", **opts)
+            memo = item.get('memo', '').replace('\n', ' ').strip()
+            if memo and not context:
+                context.append(memo[:20])
+            caption = f"{item['title']}\n{detail}" + (f"\n{' · '.join(context)}" if context else '')
+            self.document_tree.insert('', 'end', iid=item['id'], text=caption, **opts)
         if previous and self.document_tree.exists(previous):
             self.document_tree.selection_set(previous)
 
-    def _search_changed(self, _event=None):
+    def _search_changed(self, *_args):
         if self._refresh_id:
             self.after_cancel(self._refresh_id)
         self._visible_count = 250
         self._refresh_id = self.after(250, self._run_search)
 
     def _run_search(self):
+        if self._refresh_id:
+            self.after_cancel(self._refresh_id)
         self._refresh_id = None
         self.refresh_library()
 
@@ -306,6 +349,10 @@ class CaptureDeskApp(tk.Tk):
         self.title_var.set(document['title'])
         locked = document.get('readonly') or document.get('trashed')
         self.title_entry.configure(state='readonly' if locked else 'normal')
+        self.labels_var.set(', '.join(document.get('labels', [])))
+        self.memo_var.set(document.get('memo', ''))
+        self.labels_entry.configure(state='readonly' if locked else 'normal')
+        self.memo_entry.configure(state='readonly' if locked else 'normal')
         self.adopt_button.configure(state='normal' if document.get('readonly') and not document.get('trashed') else 'disabled')
         self.page_selector.configure(values=[f"{i + 1}쪽 · {page.get('source_name') or '캡처'}" for i, page in enumerate(pages)])
         self.page = None
@@ -428,9 +475,14 @@ class CaptureDeskApp(tk.Tk):
         try:
             title = self.title_var.get().strip()
             title_changed = bool(title) and title != self.document['title']
+            labels = [label.strip() for label in self.labels_var.get().split(',') if label.strip()]
+            memo = self.memo_var.get().strip()
+            details_changed = labels != self.document.get('labels', []) or memo != self.document.get('memo', '')
             latest = self.library.get_document(self.document['id'])
             if title_changed and latest['title'] != self.document['title']:
                 raise LibraryConflictError('제목이 다른 창에서 변경되었습니다.')
+            if details_changed and (latest.get('labels') != self.document.get('labels') or latest.get('memo') != self.document.get('memo')):
+                raise LibraryConflictError('라벨 또는 메모가 다른 창에서 변경되었습니다.')
             if self._source_dirty and self.page:
                 if self.page.get('readonly') or self.page.get('recovery_required'):
                     raise LibraryConflictError('복구가 필요한 페이지의 입력은 저장하지 않습니다.')
@@ -449,11 +501,16 @@ class CaptureDeskApp(tk.Tk):
                 if latest['title'] != self.document['title']:
                     raise LibraryConflictError('제목이 다른 창에서 변경되었습니다.')
                 self.library.rename(self.document['id'], title, expected_updated_at=latest['updated_at'])
+            if details_changed:
+                latest = self.library.get_document(self.document['id'])
+                self.library.update_details(self.document['id'], labels, memo, expected_updated_at=latest['updated_at'])
             self.document = self.library.get_document(self.document['id'])
             self.title_var.set(self.document['title'])
+            self.labels_var.set(', '.join(self.document.get('labels', [])))
+            self.memo_var.set(self.document.get('memo', ''))
             self.save_state.set('저장됨')
             self._update_output_staleness()
-            if title_changed:
+            if title_changed or details_changed:
                 self.refresh_library()
             return True
         except Exception:
@@ -571,6 +628,8 @@ class CaptureDeskApp(tk.Tk):
             self.output = None
             self.page_records = []
             self.title_var.set('')
+            self.labels_var.set('')
+            self.memo_var.set('')
             self.page_selector.configure(values=[])
             self.page_selector.set('')
             self._replace(self.source_editor, '', readonly=True)
@@ -811,12 +870,12 @@ class CaptureDeskApp(tk.Tk):
                 self.accept_capture(image, document_id=doc_id)
         self.after_idle(select)
 
-    def accept_capture(self, image, *, document_id=None, source='capture', auto_read=True):
+    def accept_capture(self, image, *, document_id=None, source='capture', auto_read=True, title=None):
         """Durable original first; recoverable orphan if document linking fails."""
         record = None
         try:
             record = self.library.capture_store.save(image, source=source)
-            doc = self.library.get_document(document_id) if document_id else self.library.create_document('새 캡처')
+            doc = self.library.get_document(document_id) if document_id else self.library.create_document(title or '새 캡처')
             page = self.library.add_capture(doc['id'], record.id)
             self.refresh_library(doc['id'])
             self.open_document(doc['id'])
@@ -916,7 +975,7 @@ class CaptureDeskApp(tk.Tk):
         try:
             if kind == 'image':
                 with Image.open(path) as image:
-                    page = self.accept_capture(image.copy(), source='file_' + path.stem, auto_read=False)
+                    page = self.accept_capture(image.copy(), source='file_' + path.stem, auto_read=False, title=path.stem)
                 # File attachments require explicit choice, regardless of auto OCR.
                 if page and self.capture_mode.get() != '보관만':
                     self._read_image(page, automatic=False)

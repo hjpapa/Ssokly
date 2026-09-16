@@ -15,11 +15,11 @@ from services.capture_store import CaptureConflictError, CaptureStore
 from services.task_store import TaskStore
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _CAPTURE_WARNING = '캡처 이미지를 읽을 수 없습니다. 저장된 텍스트는 유지되며 복구가 필요합니다.'
 _DOCUMENT_WARNING = '일부 캡처를 읽을 수 없습니다. 저장된 텍스트는 유지되며 복구가 필요합니다.'
 _SCHEMA = (
-    'CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, trashed_at TEXT)',
+    "CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, trashed_at TEXT, labels_json TEXT NOT NULL DEFAULT '[]', memo TEXT NOT NULL DEFAULT '')",
     'CREATE TABLE IF NOT EXISTS pages (id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id), capture_id TEXT, text TEXT NOT NULL, source_name TEXT NOT NULL, source_path TEXT, position INTEGER NOT NULL, updated_at TEXT NOT NULL, ocr_text TEXT NOT NULL DEFAULT \'\', edited INTEGER NOT NULL DEFAULT 0, UNIQUE(document_id,capture_id))',
     'CREATE INDEX IF NOT EXISTS pages_by_document ON pages(document_id,position)',
     'CREATE TABLE IF NOT EXISTS outputs (id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id), mode TEXT NOT NULL, text TEXT NOT NULL, source_fingerprint TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)',
@@ -67,6 +67,25 @@ def _title(value):
     return value
 
 
+def _labels(value):
+    if isinstance(value, str):
+        value = value.split(',')
+    if not isinstance(value, (list, tuple)):
+        raise TypeError('라벨 목록이 필요합니다.')
+    result = []
+    for label in value:
+        label = _text(label).strip()
+        if not label:
+            continue
+        if len(label) > 24 or '\n' in label or ',' in label:
+            raise ValueError('라벨은 24자 이내이며 쉼표와 줄바꿈을 포함할 수 없습니다.')
+        if label.casefold() not in {item.casefold() for item in result}:
+            result.append(label)
+    if len(result) > 8:
+        raise ValueError('라벨은 최대 8개까지 지정할 수 있습니다.')
+    return result
+
+
 class DocumentLibrary:
     def __init__(self, app_data_dir, *, capture_store=None, task_store=None):
         self.app_data_dir = Path(app_data_dir).expanduser().resolve(strict=False)
@@ -110,13 +129,18 @@ class DocumentLibrary:
                 # Old sidecars cannot distinguish typed text from OCR. Preserve
                 # every existing value instead of guessing it is replaceable.
                 db.execute('ALTER TABLE pages ADD COLUMN edited INTEGER NOT NULL DEFAULT 1')
+            document_columns = {row[1] for row in db.execute('PRAGMA table_info(documents)')}
+            if 'labels_json' not in document_columns:
+                db.execute("ALTER TABLE documents ADD COLUMN labels_json TEXT NOT NULL DEFAULT '[]'")
+            if 'memo' not in document_columns:
+                db.execute("ALTER TABLE documents ADD COLUMN memo TEXT NOT NULL DEFAULT ''")
             self._validate_schema(db)
-            db.execute('PRAGMA user_version=2')
+            db.execute('PRAGMA user_version=3')
 
     @staticmethod
     def _validate_schema(db):
         expected = {
-            'documents': {'id', 'title', 'created_at', 'updated_at', 'trashed_at'},
+            'documents': {'id', 'title', 'created_at', 'updated_at', 'trashed_at', 'labels_json', 'memo'},
             'pages': {'id', 'document_id', 'capture_id', 'text', 'source_name', 'source_path', 'position', 'updated_at', 'ocr_text', 'edited'},
             'outputs': {'id', 'document_id', 'mode', 'text', 'source_fingerprint', 'created_at', 'updated_at'},
             'settings': {'key', 'value_json'},
@@ -164,6 +188,7 @@ class DocumentLibrary:
         pages = self._pages(db, row['id'])
         needs_recovery = any(page['recovery_required'] for page in pages)
         return {'id': row['id'], 'title': row['title'], 'page_count': len(pages),
+                'labels': json.loads(row['labels_json']), 'memo': row['memo'],
                 'created_at': row['created_at'],
                 'updated_at': max([row['updated_at'], *(page['updated_at'] for page in pages)]),
                 'legacy': False, 'readonly': False, 'trashed': row['trashed_at'] is not None,
@@ -198,7 +223,7 @@ class DocumentLibrary:
         # If the later sidecar write fails, this compatibility task remains
         # discoverable as a legacy entry rather than deleting saved data.
         self.task_store.create(task_id=document_id, title=title, output_mode='문서', source_text='', analysis_text='')
-        db.execute('INSERT INTO documents VALUES (?,?,?,?,NULL)', (document_id, title, stamp, stamp))
+        db.execute('INSERT INTO documents(id,title,created_at,updated_at,trashed_at) VALUES (?,?,?,?,NULL)', (document_id, title, stamp, stamp))
         return self._document(db, db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone())
 
     def add_capture(self, document_id, capture_id):
@@ -420,13 +445,25 @@ class DocumentLibrary:
             matched = []
             for document in result:
                 pages = self.pages(document['id'])
-                haystack = '\n'.join([document['title'], *(page['text'] for page in pages),
+                haystack = '\n'.join([document['title'], document.get('memo', ''), *document.get('labels', []), *(page['text'] for page in pages),
                     *(page['ocr_text'] for page in pages), *(page['source_name'] for page in pages),
                     *(output['text'] for output in self.outputs(document['id']))]).casefold()
                 if needle in haystack:
                     matched.append(document)
             result = matched
         return sorted(result, key=lambda item: (item['updated_at'], item['id']), reverse=True)
+
+    def update_details(self, document_id, labels, memo, expected_updated_at=None):
+        labels = _labels(labels)
+        memo = _text(memo).strip()
+        if len(memo) > 2000:
+            raise ValueError('메모는 2000자 이내로 입력해 주세요.')
+        with self._db(write=True) as db:
+            self._managed(db, document_id, expected_updated_at)
+            db.execute('UPDATE documents SET labels_json=?,memo=? WHERE id=?',
+                       (json.dumps(labels, ensure_ascii=False), memo, document_id))
+            self._touch(db, document_id)
+            return self._document(db, db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone())
 
     def rename(self, document_id, title, expected_updated_at=None):
         title = _title(title)

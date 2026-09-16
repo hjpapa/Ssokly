@@ -110,6 +110,30 @@ class DocumentLibraryTests(unittest.TestCase):
             self.assertEqual([item['id'] for item in self.library.list_documents(query)], [document['id']])
         self.assertEqual(self.library.list_documents('없는검색어'), [])
 
+    def test_labels_and_memo_are_searchable_persisted_and_conflict_safe(self):
+        document = self.library.create_document('자료')
+        saved = self.library.update_details(document['id'], '행사, 제출, 행사', '교무실에서 확인', document['updated_at'])
+        self.assertEqual(saved['labels'], ['행사', '제출'])
+        self.assertEqual(saved['memo'], '교무실에서 확인')
+        for query in ('행사', '제출', '교무실'):
+            self.assertEqual([item['id'] for item in self.reopen().list_documents(query)], [document['id']])
+        with self.assertRaises(LibraryConflictError):
+            self.library.update_details(document['id'], ['변경'], '덮어쓰기', document['updated_at'])
+        self.assertEqual(self.reopen().get_document(document['id']), saved)
+        with self.assertRaises(ValueError):
+            self.library.update_details(document['id'], ['쉼표,포함'], '')
+
+    def test_v2_library_upgrade_adds_empty_details_and_keeps_document(self):
+        document = self.library.create_document('기존 자료')
+        with closing(sqlite3.connect(self.library.path)) as db, db:
+            db.execute('ALTER TABLE documents DROP COLUMN labels_json')
+            db.execute('ALTER TABLE documents DROP COLUMN memo')
+            db.execute('PRAGMA user_version=2')
+        reopened = self.reopen()
+        self.assertEqual(reopened.get_document(document['id'])['labels'], [])
+        self.assertEqual(reopened.get_document(document['id'])['memo'], '')
+        self.assertEqual(len(list(Path(self.temp.name).glob('document_library.sqlite3.before-library-*.bak'))), 1)
+
     def test_legacy_task_keeps_integrated_text_results_and_image_references_read_only(self):
         capture = self.capture('페이지 OCR')
         task = self.library.task_store.create(title='기존 업무', source_text='교사가 편집한 전체 원문', analysis_text='기존 결과')
@@ -326,7 +350,7 @@ class DocumentLibraryTests(unittest.TestCase):
 
         class FailFinalVersion(sqlite3.Connection):
             def execute(self, sql, *args, **kwargs):
-                if sql.strip().upper() == 'PRAGMA USER_VERSION=2':
+                if sql.strip().upper() == 'PRAGMA USER_VERSION=3':
                     raise sqlite3.OperationalError('synthetic final migration failure')
                 return super().execute(sql, *args, **kwargs)
 

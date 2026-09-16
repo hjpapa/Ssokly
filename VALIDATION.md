@@ -6,6 +6,26 @@
 
 ## 단계별 후속 검증 — 2026-09-17
 
+### 자료 라이브러리 개선 게시 인계
+
+- 라벨·메모·검색 UI 소스와 아래 검증 기록을 GitHub `main`에 게시했습니다. 인계 작업에서 앱 회귀·유료 API를 재실행하지 않았습니다. 아래 수치는 구현·수정 단계에서 실제 실행한 결과입니다.
+
+### 자료 검색 입력·버튼과 목록 문구 보완
+
+- `.venv\Scripts\python.exe -m unittest tests.test_capture_desk tests.test_capture_desk_layout -q`: **24개 통과, 8.997초**. 검색어 변수 변경(키 해제 이벤트 없이), 버튼 즉시 조회, 입력칸 값 변경·검색 결과 건수와 기존 좁은 창 배치를 임시 저장소/Tk로 확인.
+- `.venv\Scripts\python.exe -m unittest discover -s tests -q`: **594개 통과, 46.383초**, 실패/오류/건너뜀 없음. 아래 최종 목록 보조 문구 조정 전 코드 기준.
+- `.venv\Scripts\python.exe tools/verify_capture_desk.py`: **209개 통과, 21.434초**, 실패/오류/건너뜀/통신 시도 0. 합성 자료·mock API·프로세스 내부 통신 차단. 아래 최종 목록 보조 문구 조정 전 코드 기준.
+- 최종 목록 보조 문구를 날짜·쪽 수와 분류 상태의 별도 줄로 바꾼 뒤 `tests.test_capture_desk tests.test_capture_desk_layout -q` **24개 통과, 8.907초**. `compileall -q services ui tests`, `git diff --check`, 문서 로컬 링크 대상 존재 확인 통과. 실물 자료·실제 사용자 검색 조작·유료 OCR/AI는 수행하지 않음.
+
+### 자료 라이브러리 라벨·메모 및 화면 개편
+
+- `.venv\Scripts\python.exe -m unittest tests.test_document_library -q`: **34개 통과, 1.735초**. 라벨 중복 정리·메모 검색·재열기·동시 변경 충돌·기존 v2 DB 가산 업그레이드와 백업을 임시 저장소로 확인.
+- `.venv\Scripts\python.exe -m unittest tests.test_capture_desk tests.test_capture_desk_flow tests.test_capture_desk_layout -q`: **47개 통과, 12.616초**. 라벨/메모 저장·필터·문서 전환·검색 및 기존 캡처/Tk 배치 흐름. 뒤이어 `자료 검색` 문구를 추가하고 `tests.test_capture_desk tests.test_capture_desk_layout -q` **24개 통과, 9.372초**로 최종 UI를 다시 확인.
+- `.venv\Scripts\python.exe -m unittest discover -s tests -q`: **594개 통과, 46.971초**. 위 UI 문구 추가 전 코드 기준. 실패·오류·건너뜀 없음. 기존 Pillow 폐기 예정 경고와 의도적으로 주입한 재검토 실패 로그는 테스트 실패가 아님.
+- `.venv\Scripts\python.exe tools/verify_capture_desk.py`: **209개 통과, 21.679초**, 실패/오류/건너뜀/통신 시도 0. 합성 이미지·임시 DB·mock API와 프로세스 내부 소켓/DNS 차단. 위 UI 문구 추가 전 코드 기준.
+- `.venv\Scripts\python.exe -m compileall -q services ui tests`, `git diff --check` 통과. 첫 Tk 시험은 제한된 실행 환경에서 설치 Tcl 파일 접근 오류가 발생하여 허용 실행으로 재실행했고, 제품 UI 오류로 집계하지 않음. 첫 대상 실행의 스키마 최종 버전 기대값 2를 3으로 갱신한 뒤 저장소 집중 시험 통과.
+- 실제 기본 저장소·실물 공문·유료 OCR/AI·네이티브 캡처 조작·고배율 육안 검수·EXE는 이번에 시험하지 않음. 기존 사용자 자료와 전송 설정은 변경하지 않음.
+
 ### 커밋·푸시 인계 확인
 
 - 아래 캡처·보관함 수정 소스·테스트·문서를 `dbd25a3`으로 커밋하고 GitHub `main`에 푸시했습니다. 기존 개선안 문서 삭제·키·업무 자료·로컬 백업은 제외했습니다.
