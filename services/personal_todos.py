@@ -26,12 +26,21 @@ def checklist_items(markdown):
 
 
 class PersonalTodoStore:
-    def __init__(self, directory):
+    def __init__(self, directory, card_store=None):
         self.path = Path(directory) / "personal_todos.sqlite3"
+        self.card_store = card_store
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            with closing(sqlite3.connect(self.path)) as db:
+                has_links = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='todo_card_links'").fetchone()
+            if not has_links:
+                from services.work_card_store import backup_database
+                backup_database(self.path)
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, item TEXT NOT NULL, source TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)")
             db.execute("CREATE TABLE IF NOT EXISTS analysis_origins (fingerprint TEXT PRIMARY KEY)")
+            # Separate additive relation: old todo rows and completion flags stay intact.
+            db.execute("CREATE TABLE IF NOT EXISTS todo_card_links (todo_id TEXT PRIMARY KEY, card_id TEXT NOT NULL UNIQUE)")
 
     @staticmethod
     def _fingerprint(result, source):
@@ -55,15 +64,52 @@ class PersonalTodoStore:
                 count += db.execute("INSERT OR IGNORE INTO todos(id,item,source) VALUES(?,?,?)", (key, item, source)).rowcount
         return count
 
-    def list(self):
+    def add_cards(self, cards, card_store=None):
+        from services.work_card_store import WorkCardStore, render_card_item
+        store = card_store or self.card_store
+        if store is None:
+            store = WorkCardStore(self.path.parent)
+        count = 0
+        with closing(sqlite3.connect(self.path)) as db, db:
+            for supplied in cards:
+                card_id = supplied if isinstance(supplied, str) else supplied['id']
+                card = store.get_card(card_id)
+                if card is None:
+                    raise KeyError(card_id)
+                if db.execute('SELECT 1 FROM todo_card_links WHERE card_id=?', (card_id,)).fetchone():
+                    continue
+                key = 'card:' + card_id
+                document = store.get_document(card['document_id'])
+                db.execute('INSERT INTO todos(id,item,source) VALUES (?,?,?)',
+                           (key, render_card_item(card), document['text']))
+                db.execute('INSERT INTO todo_card_links VALUES (?,?)', (key, card_id))
+                count += 1
+        return count
+
+    def list(self, card_store=None):
         with closing(sqlite3.connect(self.path)) as db:
             db.row_factory = sqlite3.Row
-            return [dict(row) for row in db.execute("SELECT * FROM todos ORDER BY done, rowid DESC")]
+            rows = [dict(row) for row in db.execute(
+                'SELECT todos.*,todo_card_links.card_id FROM todos LEFT JOIN todo_card_links '
+                'ON todos.id=todo_card_links.todo_id ORDER BY done,todos.rowid DESC')]
+        if any(row['card_id'] for row in rows):
+            from services.work_card_store import WorkCardStore, render_card_item
+            store = card_store or self.card_store or WorkCardStore(self.path.parent)
+            for row in rows:
+                if row['card_id']:
+                    card = store.get_card(row['card_id'])
+                    row['card_missing'] = card is None
+                    if card:
+                        row['item'] = render_card_item(card)
+                        row['card_version'] = card['version']
+        return rows
 
     def set_done(self, ids, done):
         with closing(sqlite3.connect(self.path)) as db, db:
             db.executemany("UPDATE todos SET done=? WHERE id=?", [(int(done), key) for key in ids])
 
     def delete(self, ids):
+        ids = list(ids)
         with closing(sqlite3.connect(self.path)) as db, db:
+            db.executemany("DELETE FROM todo_card_links WHERE todo_id=?", [(key,) for key in ids])
             db.executemany("DELETE FROM todos WHERE id=?", [(key,) for key in ids])

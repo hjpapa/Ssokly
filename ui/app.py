@@ -12,6 +12,13 @@ from uuid import uuid4
 from PIL import Image, ImageTk
 
 from services.ai_service import analyze_document_task
+from services.analysis_document import action_card_data
+from services.card_outputs import render_current_cards
+from services.work_card_store import WorkCardStore
+from services.workspace_state import WorkspaceStateStore, text_fingerprint
+from services.transfer_policy import TransferPolicyStore, ScopeExpansionRequired, make_text_snapshot, risk_candidates
+from ui.transfer_dialog import choose_transfer
+from ui.work_cards import WorkCardsPanel
 from services.personal_todos import PersonalTodoStore, checklist_items
 from services.source_review import highlight_source, tabular_blocks
 from services.local_ocr import extract_local_text
@@ -99,7 +106,13 @@ class SsoklyApp(tk.Tk):
             app_data_dir=self.task_store.app_data_dir
         )
         loaded_window_settings = self.settings_store.load()
-        self.personal_todos = PersonalTodoStore(self.task_store.app_data_dir)
+        self.work_cards = WorkCardStore(self.task_store.app_data_dir)
+        self.workspace_state = WorkspaceStateStore(self.task_store.app_data_dir)
+        self.transfer_policies = TransferPolicyStore(self.task_store.app_data_dir)
+        self.personal_todos = PersonalTodoStore(self.task_store.app_data_dir, card_store=self.work_cards)
+        self.document_id = uuid4().hex
+        self._current_artifact = None
+        self._source_sync_after_id = None
         # Product defaults intentionally supersede older saved model selections.
         self.ocr_engine_var = tk.StringVar(value="OpenAI 정밀 OCR")
         self.analysis_model_var = tk.StringVar(value="gpt-5-nano")
@@ -200,6 +213,16 @@ class SsoklyApp(tk.Tk):
             self.iconphoto(True, self.window_icon)
         except tk.TclError:
             self.window_icon = None
+
+    def destroy(self):
+        # Tests and window-manager teardown can bypass _on_close.
+        # Cancel callbacks owned by this Tcl interpreter before its commands vanish.
+        try:
+            for callback in self.tk.call('after', 'info'):
+                self.after_cancel(callback)
+        except tk.TclError:
+            pass
+        super().destroy()
 
     def _build_styles(self) -> None:
         self.configure(bg=MINT_CANVAS)
@@ -312,6 +335,20 @@ class SsoklyApp(tk.Tk):
 
         self._build_source_tab()
         self._build_result_tab()
+        self._build_cards_tab()
+
+    def _build_cards_tab(self):
+        self.cards_tab = ttk.Frame(self.notebook, style="Surface.TFrame", padding=12)
+        self.notebook.insert(0, self.cards_tab, text="업무 카드")
+        actions = ttk.Frame(self.cards_tab)
+        actions.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(actions, text="AI로 업무 추출 / 재분석", command=lambda: self.analyze_text(force=True)).pack(side=tk.LEFT)
+        ttk.Button(actions, text="원문 펼치기", command=lambda: self.notebook.select(self.source_tab)).pack(side=tk.LEFT, padx=6)
+        ttk.Button(actions, text="초안 이력", command=self.show_artifact_history).pack(side=tk.LEFT)
+        self.card_panel = WorkCardsPanel(self.cards_tab, self.work_cards, lambda: self.document_id,
+            on_changed=self._card_changed, on_add_todo=self._add_card_todo, on_generate=self.generate_card_draft)
+        self.card_panel.pack(fill=tk.BOTH, expand=True)
+        self.notebook.select(self.cards_tab)
 
     def _build_window_controls(self, workspace: ttk.Frame) -> None:
         self.window_controls = ttk.Frame(workspace, style="App.TFrame")
@@ -844,8 +881,11 @@ class SsoklyApp(tk.Tk):
     def _build_source_tab(self) -> None:
         preferences = ttk.Frame(self.source_tab, style="Surface.TFrame")
         preferences.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(preferences, text="담당자별 업무 자동 정리 · GPT-5 nano\nOpenAI 전송 · 근거 불일치 시 최대 1회 추가 재검토(비용 발생)",
+        ttk.Label(preferences, text="담당·대상별 업무 카드 · GPT-5 nano\n명시적 AI 실행 시 OpenAI 전송 · 근거 재검토 최대 1회(비용 발생)",
                   style="Muted.TLabel").pack(anchor=tk.W)
+        self.transfer_status = tk.StringVar(value="아직 외부 전송하지 않음 · 원문 편집·저장은 로컬 처리")
+        ttk.Label(preferences, textvariable=self.transfer_status, wraplength=800).pack(anchor=tk.W)
+        ttk.Button(preferences, text="전송 사본 선택 / 가리기", command=self.choose_text_transfer).pack(anchor=tk.W, pady=4)
         ttk.Button(preferences, text="내 할 일 보기", command=self.show_personal_todos).pack(anchor=tk.W, pady=(4, 0))
         ttk.Label(self.source_tab, text="인식된 원문", style="Section.TLabel").pack(anchor=tk.W)
         ttk.Label(
@@ -858,7 +898,7 @@ class SsoklyApp(tk.Tk):
         template_panel.pack(fill=tk.X, pady=(0, 12))
         tk.Label(
             template_panel,
-            text="원문 검수 후 만들기",
+            text="업무 카드 추출 · 저장한 카드로 새 초안 만들기",
             bg=MINT_PANEL,
             fg=TEAL_DEEP,
             font=("Malgun Gothic", 10, "bold"),
@@ -910,7 +950,7 @@ class SsoklyApp(tk.Tk):
         review_tools.pack(fill=tk.X, pady=(6, 0))
         ttk.Button(review_tools, text="표 보기", command=self.show_source_tables).pack(side=tk.LEFT)
         ttk.Button(review_tools, text="원문 요약", command=lambda: self.analyze_text("원문 요약")).pack(side=tk.LEFT, padx=6)
-        ttk.Label(self.source_tab, text="청록색: 인식된 날짜 · 빨간 밑줄: 판독 불확실·잘못된 날짜 (원본 대조 필요)",
+        ttk.Label(self.source_tab, text="청록색: 인식된 날짜 · 빨간 밑줄: 판독 불확실·잘못된 날짜·요일 충돌 (원본 대조 필요)",
                   style="Muted.TLabel", wraplength=520).pack(anchor=tk.W, pady=(4, 0))
 
         footer = ttk.Frame(self.source_tab, style="Surface.TFrame")
@@ -980,6 +1020,9 @@ class SsoklyApp(tk.Tk):
         personal_bar.pack(fill=tk.X, pady=(8, 0))
         ttk.Button(personal_bar, text="내 할 일로 담기", command=self.choose_personal_todos).pack(side=tk.LEFT)
         ttk.Button(personal_bar, text="내 할 일 보기", command=self.show_personal_todos).pack(side=tk.LEFT, padx=6)
+        ttk.Button(personal_bar, text="초안 이력", command=self.show_artifact_history).pack(side=tk.LEFT, padx=6)
+        self.artifact_status = tk.StringVar(value="")
+        ttk.Label(self.result_tab, textvariable=self.artifact_status, foreground="#9b492c", wraplength=800).pack(anchor=tk.W)
         ttk.Button(self.result_tab, text="실행안으로 업무 도식화 만들기", command=self.create_workflow_diagram).pack(anchor=tk.E, pady=(8, 0))
         self.partial_copy_buttons = [
             self.schedule_button,
@@ -1087,6 +1130,10 @@ class SsoklyApp(tk.Tk):
     def choose_personal_todos(self):
         if self._active_operation_id is not None:
             messagebox.showinfo("처리 중", "분석이 끝난 뒤 항목을 선택해 주세요.")
+            return
+        if self.work_cards.list_cards(self.document_id):
+            self.notebook.select(self.cards_tab)
+            self.status_var.set('업무 카드를 선택해 ‘내 할 일에 담기’를 누르세요. 이후 카드 수정도 연결됩니다.')
             return
         items = checklist_items(self.result_text.get("1.0", "end-1c"))
         if not items:
@@ -1326,19 +1373,20 @@ class SsoklyApp(tk.Tk):
         )
 
     def _run_document_extraction(self, path: Path) -> None:
+        snapshot = self._select_transfer(kind="file", path=path, force=True)
+        if snapshot is None:
+            return
         self.status_var.set(f"{path.name} 첨부 문서를 읽는 중입니다...")
         self._start_worker_operation(
             "document",
-            lambda: extract_text_from_file(
-                path,
-                mime_type_for(path),
-                raise_errors=True,
-            ),
-            {"filename": path.name},
+            lambda: self._read_transfer_snapshot(snapshot, path=path),
+            {"filename": path.name, "transfer_snapshot": snapshot,
+             "document_policy_scope": snapshot.policy.scope_id},
         )
 
     def _finish_document_extraction(self, text: str, filename: str) -> None:
         self._replace_ocr_text(text, track_change=True)
+        self._record_imported_source(text, '파일 추출본')
         self._refresh_auto_title()
         self.notebook.select(self.source_tab)
         self.status_var.set(f"{filename} 문서를 읽었습니다. 원문을 검수해 주세요.")
@@ -1352,19 +1400,20 @@ class SsoklyApp(tk.Tk):
     ) -> None:
         local = self.ocr_engine_var.get() == "Windows 기본 OCR" and apply_mode == "replace"
         selected_model = self.ocr_model_var.get()
+        snapshot = None if local else self._select_transfer(kind="image", image=image, capture_id=capture_id, force=True)
+        if not local and snapshot is None:
+            return
         self.status_var.set("Windows 기본 OCR로 읽는 중입니다..." if local else "OpenAI 정밀 OCR로 읽는 중입니다...")
         self._start_worker_operation(
             "ocr",
-            lambda: extract_local_text(image) if local else extract_text_from_image(
-                image,
-                raise_errors=True,
-                detail="high",
-                model_override=selected_model,
-            ),
+            lambda: extract_local_text(image) if local else self._read_transfer_snapshot(snapshot, model=selected_model),
             {
                 "capture_id": capture_id,
                 "apply_mode": apply_mode,
                 "ocr_profile": "windows-ko-v1" if local else f"{selected_model}/high-table-v2",
+                "transfer_snapshot": snapshot,
+                "document_policy_scope": ((policy.scope_id if policy else None)
+                    if (policy := self.transfer_policies.get('document:' + self.document_id)) is not None else None),
             },
         )
 
@@ -1376,6 +1425,7 @@ class SsoklyApp(tk.Tk):
             self._show_ocr_comparison(text)
             return
         self._replace_ocr_text(text, track_change=True)
+        self._record_imported_source(text, 'OCR 원본')
         self._refresh_auto_title()
         self.notebook.select(self.source_tab)
         if text.strip():
@@ -1496,7 +1546,264 @@ class SsoklyApp(tk.Tk):
         self.ocr_text.focus_set()
         self.status_var.set("원문 영역에 직접 입력하거나 붙여넣을 수 있습니다.")
 
-    def analyze_text(self, output_mode: str = DEFAULT_OUTPUT_MODE) -> None:
+    def _capture_policy_scopes(self):
+        return {key: policy.scope_id for key in self.current_capture_ids
+                if (policy := self.transfer_policies.get('capture:' + key)) is not None}
+
+    def _transfer_policy(self, capture_id=None):
+        policy = self.transfer_policies.get("capture:" + capture_id) if capture_id else None
+        if policy is None:
+            policy = self.transfer_policies.get("document:" + self.document_id)
+        if not capture_id:
+            acknowledged = self.workspace_state.get(self.document_id).get('capture_policy_scopes', {})
+            protected = [item for key in self.current_capture_ids
+                         if (item := self.transfer_policies.get('capture:' + key)) is not None
+                         and item.redacted and acknowledged.get(key) != item.scope_id]
+            if protected:
+                from services.transfer_policy import TransferPolicy
+                restrictions = protected + ([policy] if policy and policy.redacted else [])
+                policy = TransferPolicy(uuid4().hex, 'text', True,
+                    '\n'.join(item.approved_text for item in restrictions),
+                    tuple({token for item in restrictions for token in item.protected}))
+        return policy
+
+    def choose_text_transfer(self):
+        if self._active_operation_id is not None:
+            messagebox.showinfo('처리 중', '현재 요청이 끝나거나 취소된 뒤 전송 범위를 변경해 주세요.')
+            return
+        self._select_transfer(kind="text", text=self.ocr_text.get("1.0", "end-1c"), force=True)
+
+    def _select_transfer(self, *, kind, text='', image=None, path=None,
+                         capture_id=None, force=False, purpose='source'):
+        """The only UI-to-network selection gate. Failure/cancel never sends."""
+        try:
+            previous = self._transfer_policy(capture_id)
+            state = self.workspace_state.get(self.document_id)
+            snapshot = None
+            if kind == 'text' and not force and previous is not None:
+                if (previous.redacted and state.get('approved_source_hash') == text_fingerprint(text)
+                    and state.get('approved_source_scope') == previous.scope_id):
+                    # Reuse the immutable redacted text, not the original still in the editor.
+                    snapshot = make_text_snapshot(previous.approved_text, previous=previous)
+                else:
+                    try:
+                        previous.guard_text(text)
+                        if not risk_candidates(text) or text == previous.approved_text:
+                            snapshot = make_text_snapshot(text, previous=previous)
+                    except ScopeExpansionRequired:
+                        pass
+            if snapshot is None:
+                snapshot = choose_transfer(self, kind=kind, text=text, image=image, path=path,
+                    previous=previous, title="도식화에 보낼 사본" if purpose == 'diagram' else "AI 전송 대상 선택")
+            if snapshot is None:
+                self.status_var.set("전송을 취소했습니다. 원본은 로컬에 유지됩니다.")
+                return None
+            key = "capture:" + capture_id if capture_id else "document:" + self.document_id
+            # Diagram grants are request-scoped. They must not loosen source policy.
+            if purpose == 'source':
+                self.transfer_policies.save(key, snapshot.policy)
+                if kind == 'text':
+                    self.workspace_state.update(self.document_id, approved_source_hash=text_fingerprint(text),
+                        approved_source_scope=snapshot.policy.scope_id, capture_policy_scopes=self._capture_policy_scopes())
+            label = {'text': '텍스트', 'image': '이미지 픽셀', 'file': '선택 파일 전체'}[snapshot.kind]
+            self.transfer_status.set(f"전송 대상: {'가린 사본' if snapshot.policy.redacted else '선택 사본'} · {label} · OpenAI API")
+            return snapshot
+        except Exception:
+            self.status_var.set("전송 사본을 준비하지 못해 요청하지 않았습니다.")
+            messagebox.showerror("전송 중단", "가림·전송 정책을 안전하게 준비하거나 저장하지 못했습니다. 원본을 대신 보내지 않았습니다. 다시 선택해 주세요.")
+            return None
+
+    @staticmethod
+    def _read_transfer_snapshot(snapshot, *, path=None, model=None):
+        if snapshot.kind == 'text':
+            return snapshot.text
+        if snapshot.kind == 'image':
+            return extract_text_from_image(snapshot.as_image(), detail='high', raise_errors=True, model_override=model)
+        if snapshot.kind == 'file':
+            selected_path = Path(snapshot.file_name)
+            return extract_text_from_file(selected_path, mime_type_for(selected_path), raise_errors=True,
+                                          file_bytes=snapshot.file_bytes, filename=snapshot.file_name)
+        raise ValueError("승인된 전송 사본이 없습니다.")
+
+    def _remember_transfer_output(self, metadata, text):
+        snapshot = metadata.get('transfer_snapshot')
+        if snapshot is None:
+            return
+        # Only OCR output from approved bytes extends an image/file policy.
+        policy = snapshot.policy.with_safe_text(text)
+        capture_id = metadata.get('capture_id')
+        if capture_id:
+            self.transfer_policies.save('capture:' + capture_id, policy, expected_scope_id=snapshot.policy.scope_id)
+        if metadata.get('apply_mode', 'replace') != 'metadata_only':
+            self.transfer_policies.save('document:' + self.document_id, policy,
+                expected_scope_id=metadata.get('document_policy_scope'))
+            self.workspace_state.update(self.document_id, approved_source_hash=text_fingerprint(text),
+                approved_source_scope=policy.scope_id, capture_policy_scopes=self._capture_policy_scopes())
+
+    def _sync_work_source(self):
+        text = self.ocr_text.get('1.0', 'end-1c')
+        state = self.workspace_state.get(self.document_id)
+        current = self.work_cards.get_document(self.document_id)
+        if current is None or state.get('source_hash') != text_fingerprint(text):
+            current = self.work_cards.ensure_document(self.document_id, text, source_kind='검수본',
+                source_ref=self.current_source_name, scope='불러온 범위 · 붙임 확인 전')
+            self.workspace_state.update(self.document_id, source_hash=text_fingerprint(text))
+        return current
+
+    def _record_imported_source(self, text, kind):
+        try:
+            self.work_cards.ensure_document(self.document_id, text, source_kind=kind,
+                source_ref=self.current_source_name, scope='불러온 범위 · 붙임 확인 전')
+            self.workspace_state.update(self.document_id, source_hash=text_fingerprint(text))
+        except Exception:
+            messagebox.showwarning('원문 버전 저장 실패', '추출한 텍스트는 화면에 유지했습니다. 업무 저장을 다시 시도해 주세요.')
+
+    def _refresh_source_version(self, context):
+        self._source_sync_after_id = None
+        if self._closing or context != self.current_context_id:
+            return
+        try:
+            self._sync_work_source()
+            self.card_panel.refresh()
+            self._refresh_artifact_status()
+        except Exception:
+            self.status_var.set('원문 버전 저장 실패 · 화면의 편집 내용은 유지했습니다. 저장 후 다시 시도하세요.')
+
+    def _card_versions(self):
+        return {card['id']: card['version'] for card in self.work_cards.list_cards(self.document_id)
+                if not card['comparison_candidate']}
+
+    def _card_changed(self, card):
+        self._refresh_artifact_status()
+        if self.save_current_task(show_success=False, allow_during_operation=True):
+            self.status_var.set('업무 카드 수정 저장 완료 · 내 할 일에 즉시 반영됩니다. 이전 안내문은 그대로 보존됩니다.')
+        else:
+            messagebox.showwarning('업무 보관함 저장 필요', '카드 수정은 저장했으나 보관함 연결 저장은 실패했습니다. 현재 화면에서 업무 저장을 다시 시도해 주세요.')
+
+    def _add_card_todo(self, card):
+        try:
+            if card.get('comparison_candidate'):
+                messagebox.showinfo('비교 후보', '별도 업무로 채택한 뒤 내 할 일에 담아 주세요.')
+                return
+            count = self.personal_todos.add_cards([card])
+            self.status_var.set(f'내 할 일 {count}개 추가 · 같은 업무는 중복 추가하지 않습니다.')
+        except Exception:
+            messagebox.showerror('내 할 일 저장 실패', '업무 카드는 유지했습니다. 저장 공간을 확인하고 다시 시도하세요.')
+
+    def _refresh_artifact_status(self):
+        if self._current_artifact:
+            try:
+                stale = self.work_cards.artifact_is_stale(self._current_artifact)
+                self.artifact_status.set(('이전 정보 기반 · 현재 정보로 새 초안 만들기 필요' if stale else '현재 업무 버전 기반')
+                    + f" · 원문 v{self._current_artifact['source_version']} · {self._current_artifact['kind']}")
+            except Exception:
+                self.artifact_status.set('결과물 버전을 확인하지 못했습니다. 화면의 내용은 유지됩니다.')
+        else:
+            self.artifact_status.set('기존 텍스트 기록 · 카드 버전 연결 전' if self.result_text.get('1.0', 'end-1c').strip() else '')
+
+    def _activate_artifact(self, artifact):
+        self.workspace_state.update(self.document_id, artifact_id=artifact['id'])
+        self._current_artifact = artifact
+        self._refresh_artifact_status()
+
+    def _archive_visible_draft(self):
+        text = self.result_text.get('1.0', 'end-1c')
+        if not text.strip() or (self._current_artifact and self._current_artifact['content'] == text):
+            return True
+        try:
+            source = self._sync_work_source()
+            old = self._current_artifact
+            artifact = self.work_cards.save_artifact(self.document_id,
+                (old['kind'].split(' · ')[0] + ' · 교사 편집') if old else self.current_output_mode + ' · 기존 기록',
+                text, old['card_versions'] if old else {}, old['source_version'] if old else source['version'])
+            self._activate_artifact(artifact)
+            return True
+        except Exception:
+            messagebox.showerror('초안 저장 실패', '편집한 안내문을 이력에 저장하지 못했습니다. 화면의 내용을 유지합니다. 저장 공간 확인 후 다시 시도하세요.')
+            return False
+
+    def generate_card_draft(self, mode=DEFAULT_OUTPUT_MODE):
+        if self._active_operation_id is not None:
+            messagebox.showinfo('처리 중', '현재 AI 작업이 끝나거나 취소한 뒤 새 초안을 만들어 주세요.')
+            return
+        if self.card_panel.has_unsaved_changes:
+            messagebox.showinfo('카드 저장 필요', '편집한 업무 카드를 먼저 저장해 주세요. 입력값은 유지했습니다.')
+            return
+        try:
+            source = self._sync_work_source()
+            cards = self.work_cards.list_cards(self.document_id)
+            if not cards:
+                self.analyze_text(mode)
+                return
+            if not self._archive_visible_draft():
+                return
+            content = self._render_card_output(cards, mode, source['version'])
+            artifact = self.work_cards.save_artifact(self.document_id, mode, content, self._card_versions(), source['version'])
+            self._activate_artifact(artifact)
+            self._finish_analysis(content, mode)
+            self._refresh_artifact_status()
+            self.status_var.set('저장한 업무 카드로 새 초안을 만들었습니다. 추가 AI 요청 없음 · 이전 초안은 이력에 보존됩니다.')
+        except Exception:
+            messagebox.showerror('새 초안 생성 실패', '기존 초안과 업무 카드는 유지했습니다. 저장 상태를 확인하고 다시 시도하세요.')
+
+    def show_artifact_history(self):
+        if not self._archive_visible_draft():
+            return
+        try:
+            self._sync_work_source()
+            history = self.work_cards.list_artifacts(self.document_id)
+        except Exception:
+            messagebox.showerror('이력 조회 실패', '초안 이력을 읽지 못했습니다. 현재 내용은 유지됩니다.')
+            return
+        window = tk.Toplevel(self)
+        window.title('초안 이력 · 이전 초안도 열람·복사 가능')
+        window.geometry('900x660')
+        listing = tk.Listbox(window, height=7)
+        listing.pack(fill=tk.X, padx=12, pady=12)
+        for item in history:
+            listing.insert(tk.END, f"{'이전 정보 기반' if item['stale'] else '현재 버전'} | {item['kind']} | 원문 v{item['source_version']} | {item['created_at'][:19]}")
+        editor = scrolledtext.ScrolledText(window, wrap=tk.WORD)
+        editor.pack(fill=tk.BOTH, expand=True, padx=12)
+        def select(_event=None):
+            if listing.curselection():
+                item = history[listing.curselection()[0]]
+                editor.configure(state=tk.NORMAL)
+                editor.delete('1.0', tk.END)
+                editor.insert('1.0', item['content'])
+                editor.configure(state=tk.DISABLED)
+        listing.bind('<<ListboxSelect>>', select)
+        ttk.Button(window, text='선택 초안 복사 (버전 확인 후 사용)',
+            command=lambda: self._copy_to_clipboard(editor.get('1.0', 'end-1c'), '이력 초안')).pack(pady=10)
+        if history:
+            listing.selection_set(0)
+            select()
+
+    def _store_analysis_cards(self, metadata, *, late=False):
+        document = metadata.get('document')
+        if document is None or late:
+            return None
+        doc_id = metadata['document_id']
+        source_text = metadata['source_text']
+        if doc_id == self.document_id:
+            self._sync_work_source()
+        cards = self.work_cards.merge_analysis(doc_id,
+            [action_card_data(action, source_text) for action in document.actions], metadata['source_version'])
+        self.workspace_state.update(doc_id, analysis_title=document.title, analysis_summary=document.summary,
+            analysis_questions=document.questions, summary_source_version=metadata['source_version'])
+        self.card_panel.refresh()
+        return cards
+
+    def _render_card_output(self, cards, mode, source_version):
+        if mode == '원문 요약':
+            state = self.workspace_state.get(self.document_id)
+            if state.get('summary_source_version') == source_version and state.get('analysis_summary'):
+                return '# 원문 요약\n\n' + state['analysis_summary'] + '\n\n불러온 원문 범위 기준입니다. 카드의 교사 수정값은 새 업무 초안에 반영됩니다.'
+            return '# 원문 요약\n\n원문이 바뀌었거나 아직 요약하지 않았습니다. 업무 카드의 ‘AI로 업무 추출 / 재분석’을 실행해 주세요.\n이전 요약과 초안은 이력에서 볼 수 있습니다.'
+        # The saved task title may be an OCR first line containing an old date.
+        # Factual dates in new drafts come only from the versioned card fields.
+        return render_current_cards(cards, mode, title='학교 업무 정리')
+
+    def analyze_text(self, output_mode: str = DEFAULT_OUTPUT_MODE, *, force=False) -> None:
         if self._active_operation_id is not None:
             messagebox.showinfo("처리 중", "현재 작업이 끝난 뒤 실행안을 만들어 주세요.")
             return
@@ -1509,17 +1816,21 @@ class SsoklyApp(tk.Tk):
             self.ocr_text.focus_set()
             return
 
-        uncertainty_count = sum(text.count(marker) for marker in OCR_REVIEW_MARKERS)
-        if uncertainty_count and not messagebox.askyesno(
-            "OCR 검수 필요",
-            f"원문에 판독이 불확실한 표시가 {uncertainty_count}개 남아 있습니다.\n"
-            "날짜·숫자·대상·첨부파일명을 원본과 대조한 뒤 분석하는 것이 안전합니다.\n\n"
-            "현재 원문으로 계속 분석할까요?",
-            icon=messagebox.WARNING,
-            default=messagebox.NO,
-        ):
-            self.notebook.select(self.source_tab)
-            self.status_var.set("불확실한 OCR 표시를 먼저 검수해 주세요.")
+        if self.work_cards.list_cards(self.document_id) and not force:
+            self.generate_card_draft(output_mode)
+            return
+        snapshot = self._select_transfer(kind="text", text=text)
+        if snapshot is None:
+            return
+        try:
+            current_source = self._sync_work_source()
+            source = self.work_cards.ensure_document(self.document_id, snapshot.text,
+                source_kind="가린 전송 사본" if snapshot.policy.redacted else current_source['source_kind'],
+                source_ref=self.current_source_name, scope="불러온 범위 · 붙임 확인 전")
+            if not self._archive_visible_draft():
+                return
+        except Exception:
+            messagebox.showerror("저장 실패", "분석 입력 버전을 저장하지 못했습니다. 현재 내용을 유지했습니다. 저장 공간을 확인하고 다시 시도하세요.")
             return
 
         self.status_var.set(f"{output_mode}을 만드는 중입니다...")
@@ -1528,7 +1839,9 @@ class SsoklyApp(tk.Tk):
         revisions = (self._source_revision, self._result_revision)
         cancel_event = threading.Event()
         self._analysis_metrics = {}
-        metadata = {"output_mode": output_mode}
+        metadata = {"output_mode": output_mode, "document_id": self.document_id,
+                    "source_version": source['version'], "source_text": snapshot.text,
+                    "card_versions": self._card_versions(), "transfer_snapshot": snapshot}
         self.notebook.select(self.result_tab)
         self.stream_preview.pack(fill=tk.X, before=self.result_text, pady=(8, 0))
         self._set_stream_preview("원문에서 할 일과 근거를 추출하고 있습니다...")
@@ -1537,12 +1850,13 @@ class SsoklyApp(tk.Tk):
         self._start_worker_operation(
             "analysis",
             lambda: analyze_document_task(
-                text,
-                output_mode,
+                snapshot.text,
+                DEFAULT_OUTPUT_MODE,
                 raise_errors=True,
                 model=model, on_preview=preview, cancel_event=cancel_event,
                 cache_dir=self.task_store.app_data_dir,
                 on_metrics=lambda metrics: metadata.update(metrics=metrics),
+                on_document=lambda document: metadata.update(document=document),
             ),
             metadata,
             cancel_event=cancel_event,
@@ -1564,7 +1878,10 @@ class SsoklyApp(tk.Tk):
             return
         if not messagebox.askyesno("업무 도식화", "현재 실행안 텍스트를 OpenAI 이미지 API로 보내 업무 흐름도를 만듭니다.\n별도 이미지 생성 비용이 발생합니다. 날짜와 내용을 확인했나요?"):
             return
-        self._start_worker_operation("diagram", lambda: generate_workflow_image(text))
+        snapshot = self._select_transfer(kind="text", text=text, force=True, purpose="diagram")
+        if snapshot is None:
+            return
+        self._start_worker_operation("diagram", lambda: generate_workflow_image(snapshot.text))
 
     def _show_workflow_diagram(self, data):
         window = tk.Toplevel(self)
@@ -1675,21 +1992,28 @@ class SsoklyApp(tk.Tk):
         selected_model = self.ocr_model_var.get()
         profile = f"{selected_model}/high-table-v2"
         cancel_event = threading.Event()
+        approved = []
+        for capture_id, path in targets:
+            try:
+                with Image.open(path) as source_image:
+                    snapshot = self._select_transfer(kind='image', image=source_image.copy(),
+                        capture_id=capture_id, force=True)
+                if snapshot is None:
+                    return  # Nothing is submitted until every selection is approved.
+                approved.append((capture_id, snapshot))
+            except Exception:
+                messagebox.showerror('캡처 전송 중단', '이미지 사본을 준비하지 못했습니다. 선택 원본을 대신 보내지 않았습니다.')
+                return
 
         def read_each_original() -> list[dict[str, Any]]:
             results: list[dict[str, Any]] = []
-            for capture_id, path in targets:
+            for capture_id, snapshot in approved:
                 if cancel_event.is_set():
                     break
                 try:
-                    with Image.open(path) as source_image:
-                        image = source_image.copy()
-                    text = extract_text_from_image(
-                        image,
-                        detail="high",
-                        raise_errors=True,
-                        model_override=selected_model,
-                    )
+                    text = self._read_transfer_snapshot(snapshot, model=selected_model)
+                    self.transfer_policies.save('capture:' + capture_id, snapshot.policy.with_safe_text(text),
+                        expected_scope_id=snapshot.policy.scope_id)
                     results.append(
                         {
                             "capture_id": capture_id,
@@ -1866,6 +2190,12 @@ class SsoklyApp(tk.Tk):
                     self._held_worker_results.append(result)
                     continue
                 if not is_current_operation:
+                    if succeeded and kind == 'analysis' and metadata.get('document_id'):
+                        try:
+                            self.work_cards.save_artifact(metadata['document_id'], '지연 응답 · 미적용', str(payload),
+                                metadata.get('card_versions', {}), metadata['source_version'])
+                        except Exception:
+                            pass  # Abandoned responses never overwrite the active workspace.
                     continue
 
                 if kind == "analysis":
@@ -1913,6 +2243,14 @@ class SsoklyApp(tk.Tk):
                     )
                     continue
 
+                if kind in ('ocr', 'document'):
+                    try:
+                        self._remember_transfer_output(metadata, str(payload))
+                    except Exception:
+                        self.status_var.set('전송 정책 저장 실패 · 기존 원문 유지. 정책 저장 후 다시 시도하세요.')
+                        messagebox.showerror('전송 정책 저장 실패', '승인 사본의 정책을 보존하지 못해 새 전사 결과를 적용하지 않았습니다. 원본 자동 재전송은 하지 않습니다.')
+                        continue
+
                 if kind == "ocr":
                     storage_error = self._persist_single_ocr_result(
                         metadata.get("capture_id"),
@@ -1935,7 +2273,18 @@ class SsoklyApp(tk.Tk):
                     operation_revisions is not None
                     and operation_revisions[1] != self._result_revision
                 )
-                if source_changed or (kind in ("analysis", "diagram") and result_changed):
+                card_changed = (kind == 'analysis' and 'card_versions' in metadata
+                    and metadata['card_versions'] != self._card_versions())
+                if source_changed or (kind in ("analysis", "diagram") and result_changed) or card_changed:
+                    if kind == 'analysis' and metadata.get('document_id'):
+                        try:
+                            self._store_analysis_cards(metadata, late=True)
+                            self.work_cards.save_artifact(metadata['document_id'], '지연 응답 · 이전 입력 기반', str(payload),
+                                metadata['card_versions'], metadata['source_version'])
+                            self.card_panel.refresh()
+                            self._refresh_artifact_status()
+                        except Exception:
+                            messagebox.showwarning('지연 응답 보존 실패', '편집값은 유지했습니다. 늦은 응답 이력 저장은 실패했습니다.')
                     self.status_var.set(
                         "처리 중 원문이나 실행안이 수정되어 도착한 결과를 적용하지 않았습니다."
                     )
@@ -1952,10 +2301,27 @@ class SsoklyApp(tk.Tk):
                 elif kind == "document":
                     self._finish_document_extraction(payload, metadata.get("filename", "첨부 파일"))
                 elif kind == "analysis":
+                    if metadata.get('document') is not None:
+                        try:
+                            self._store_analysis_cards(metadata)
+                            mode = metadata.get('output_mode', DEFAULT_OUTPUT_MODE)
+                            cards = self.work_cards.list_cards(self.document_id)
+                            payload = self._render_card_output(cards, mode, metadata['source_version'])
+                            artifact = self.work_cards.save_artifact(self.document_id, mode, payload,
+                                self._card_versions(), metadata['source_version'])
+                            self._activate_artifact(artifact)
+                        except Exception:
+                            self.status_var.set('업무 카드·초안 저장 실패 · 이전 화면을 유지했습니다.')
+                            messagebox.showerror('분석 저장 실패', '기존 편집 내용을 유지했습니다. 저장 공간을 확인하고 다시 시도하세요.')
+                            continue
                     self._finish_analysis(
                         payload,
                         metadata.get("output_mode", DEFAULT_OUTPUT_MODE),
                     )
+                    if metadata.get('document') is not None:
+                        self.notebook.select(self.cards_tab)
+                        self._refresh_artifact_status()
+                        self.save_current_task(show_success=False)
                 else:
                     self._finish_ocr(
                         payload,
@@ -3366,6 +3732,7 @@ class SsoklyApp(tk.Tk):
             if widget is self.ocr_text:
                 self._source_revision += 1
                 highlight_source(widget)
+                self._queue_source_version()
             elif widget is self.result_text:
                 self._result_revision += 1
             self._mark_workspace_dirty()
@@ -3464,6 +3831,8 @@ class SsoklyApp(tk.Tk):
     ) -> None:
         self._cancel_autosave()
         self.current_context_id = uuid4().hex
+        self.document_id = uuid4().hex
+        self._current_artifact = None
         self.current_task_id = None
         self.current_task_updated_at = None
         self.current_task_status = "open"
@@ -3486,6 +3855,9 @@ class SsoklyApp(tk.Tk):
         self._set_title_programmatically(initial_title)
         self._replace_ocr_text("")
         self._replace_result_text("")
+        self.card_panel.refresh()
+        self._refresh_artifact_status()
+        self.transfer_status.set('아직 외부 전송하지 않음 · 원문 편집·저장은 로컬 처리')
         for item in self.task_tree.selection():
             self.task_tree.selection_remove(item)
         self._render_workspace_state()
@@ -3514,8 +3886,12 @@ class SsoklyApp(tk.Tk):
         source_path = str(self.current_source_path) if self.current_source_path else None
 
         try:
+            self._sync_work_source()
+            if not self._archive_visible_draft():
+                return False
             if self.current_task_id is None:
                 record = self.task_store.create(
+                    task_id=self.document_id,
                     title=title,
                     status=self.current_task_status,
                     source_kind=self.current_source_kind,
@@ -3606,6 +3982,10 @@ class SsoklyApp(tk.Tk):
         return [record.id for record in records]
 
     def _prepare_to_leave_current(self, reason: str) -> bool:
+        if self.card_panel.has_unsaved_changes:
+            messagebox.showinfo('업무 카드 편집 중', '이동·종료 전에 업무 카드의 수정 저장을 눌러 주세요. 저장 실패 시 편집값을 유지합니다.')
+            self.notebook.select(self.cards_tab)
+            return False
         discard_operation = False
         if self._active_operation_id is not None:
             self._hold_active_operation_results = True
@@ -3682,6 +4062,9 @@ class SsoklyApp(tk.Tk):
             return
 
         self._closing = True
+        if self._source_sync_after_id is not None:
+            self.after_cancel(self._source_sync_after_id)
+            self._source_sync_after_id = None
         self._cancel_autosave()
         self._cancel_task_search_refresh()
         if not self._flush_window_settings():
@@ -3799,6 +4182,8 @@ class SsoklyApp(tk.Tk):
     def _load_task_record(self, record: TaskRecord) -> None:
         self._cancel_autosave()
         self.current_context_id = uuid4().hex
+        self.document_id = record.id
+        self._current_artifact = None
         self.current_task_id = record.id
         self.current_task_updated_at = record.updated_at
         self.current_task_status = record.status
@@ -3816,10 +4201,23 @@ class SsoklyApp(tk.Tk):
         self._set_title_programmatically(record.title)
         self._replace_ocr_text(record.source_text)
         self._replace_result_text(record.analysis_text)
+        try:
+            self._sync_work_source()
+            artifact_id = self.workspace_state.get(self.document_id).get('artifact_id')
+            self._current_artifact = next((item for item in self.work_cards.list_artifacts(self.document_id)
+                                           if item['id'] == artifact_id), None)
+            policy = self._transfer_policy()
+            self.transfer_status.set('이전 가림 정책 유지 · 후속 전송도 선택 사본만 사용' if policy and policy.redacted else 'AI 버튼 실행 시 선택 텍스트를 OpenAI로 전송')
+        except Exception:
+            self.transfer_status.set('저장된 버전·정책 확인 필요 · 전송 시 재확인')
+        self.card_panel.refresh()
+        self._refresh_artifact_status()
         if self.task_tree.exists(record.id):
             self.task_tree.selection_set(record.id)
             self.task_tree.focus(record.id)
         self.notebook.select(self.result_tab if record.analysis_text.strip() else self.source_tab)
+        if self.work_cards.list_cards(self.document_id):
+            self.notebook.select(self.cards_tab)
         self.status_var.set("저장된 업무를 불러왔습니다. API를 다시 호출하지 않았습니다.")
         self._render_workspace_state()
 
@@ -4090,6 +4488,16 @@ class SsoklyApp(tk.Tk):
     def _replace_ocr_text(self, text: str, track_change: bool = False) -> None:
         self._replace_text_widget(self.ocr_text, text, track_change)
         highlight_source(self.ocr_text)
+        if track_change:
+            self._queue_source_version()
+
+    def _queue_source_version(self):
+        if self._source_sync_after_id is not None:
+            self.after_cancel(self._source_sync_after_id)
+        self._source_sync_after_id = self.after(AUTOSAVE_DELAY_MS,
+            lambda context=self.current_context_id: self._refresh_source_version(context))
+        if self._current_artifact:
+            self.artifact_status.set('원문이 변경됨 · 이전 초안을 보존하고 있습니다.')
 
     def _replace_result_text(self, text: str, track_change: bool = False) -> None:
         self._replace_text_widget(self.result_text, text, track_change)

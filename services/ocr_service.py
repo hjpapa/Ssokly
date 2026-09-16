@@ -210,6 +210,7 @@ def extract_text_from_image(
             options["text"] = {"verbosity": "low"}
         response = client.responses.create(
             model=model,
+            store=False,
             **options,
             instructions=OCR_PROMPT,
             input=[
@@ -254,6 +255,8 @@ def extract_text_from_file(
     mime_type: str,
     *,
     raise_errors: bool = False,
+    file_bytes: Optional[bytes] = None,
+    filename: Optional[str] = None,
 ) -> str:
     """Extract text from an OpenAI-supported document using an input_file item."""
     api_key, model = _load_openai_settings()
@@ -262,7 +265,7 @@ def extract_text_from_file(
             raise RuntimeError(MISSING_KEY_MESSAGE)
         return MISSING_KEY_MESSAGE
 
-    file_size = path.stat().st_size
+    file_size = len(file_bytes) if file_bytes is not None else path.stat().st_size
     if file_size > MAX_FILE_BYTES:
         message = "첨부 파일이 50MB를 초과합니다. 파일을 나누거나 필요한 부분만 캡처해 주세요."
         if raise_errors:
@@ -270,7 +273,7 @@ def extract_text_from_file(
         return message
 
     try:
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        encoded = base64.b64encode(file_bytes if file_bytes is not None else path.read_bytes()).decode("ascii")
         from openai import OpenAI
 
         client = OpenAI(
@@ -280,6 +283,7 @@ def extract_text_from_file(
         )
         response = client.responses.create(
             model=model,
+            store=False,
             instructions=DOCUMENT_PROMPT,
             input=[
                 {
@@ -291,7 +295,7 @@ def extract_text_from_file(
                         },
                         {
                             "type": "input_file",
-                            "filename": path.name,
+                            "filename": filename or path.name,
                             "file_data": f"data:{mime_type};base64,{encoded}",
                         },
                     ],

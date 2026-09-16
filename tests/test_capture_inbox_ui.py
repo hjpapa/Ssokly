@@ -11,10 +11,14 @@ from PIL import Image
 from services.capture_store import CaptureRecord, CaptureStore
 from services.task_store import TaskStore
 from ui.app import SsoklyApp
+from tests.transfer_fixtures import approve_synthetic_transfer
 
 
 class CaptureInboxUiTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        transfer = mock.patch('ui.app.choose_transfer', side_effect=approve_synthetic_transfer)
+        transfer.start()
+        self.addCleanup(transfer.stop)
         self.temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_directory.cleanup)
         self.root = Path(self.temp_directory.name)
@@ -188,6 +192,7 @@ class CaptureInboxUiTestCase(unittest.TestCase):
             raise_errors=True,
             model="gpt-5-nano", on_preview=mock.ANY,
             cancel_event=mock.ANY, cache_dir=self.task_store.app_data_dir, on_metrics=mock.ANY,
+            on_document=mock.ANY,
         )
 
     def test_custom_current_edits_open_comparison_instead_of_auto_replace(self) -> None:
@@ -639,7 +644,7 @@ class CaptureInboxUiTestCase(unittest.TestCase):
             "교사가 검수한 원문",
         )
 
-    def test_uncertainty_markers_require_confirmation_before_analysis(self) -> None:
+    def test_uncertainty_markers_do_not_force_full_review_after_transfer_approval(self) -> None:
         assert self.app is not None
         self.app._start_new_workspace(source_kind="manual", source_name="직접 입력")
         self.app._replace_ocr_text(
@@ -647,13 +652,17 @@ class CaptureInboxUiTestCase(unittest.TestCase):
             track_change=True,
         )
 
+        with mock.patch('ui.app.choose_transfer', return_value=None), mock.patch.object(self.app, '_start_worker_operation') as cancelled:
+            self.app.analyze_text()
+        cancelled.assert_not_called()
+
         with mock.patch("ui.app.messagebox.askyesno", return_value=False) as confirm:
             with mock.patch.object(self.app, "_start_worker_operation") as start:
                 self.app.analyze_text()
 
-        confirm.assert_called_once()
-        start.assert_not_called()
-        self.assertEqual(self.app.notebook.select(), str(self.app.source_tab))
+        confirm.assert_not_called()
+        start.assert_called_once()
+        self.assertEqual(self.app.notebook.select(), str(self.app.result_tab))
 
     def test_capture_link_failure_keeps_save_pending_until_retry_succeeds(self) -> None:
         assert self.app is not None

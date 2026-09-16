@@ -109,6 +109,7 @@ class TaskStore:
         analysis_text: str = "",
         output_mode: str = "통합 실행안",
         capture_path: Optional[PathLike] = None,
+        task_id: Optional[str] = None,
     ) -> TaskRecord:
         normalized_title = _required_text(title, "title")
         normalized_status = _validated_status(status)
@@ -119,7 +120,10 @@ class TaskStore:
         if capture_path is not None and normalized_source_kind != "capture":
             raise ValueError("capture_path can only be used with source_kind='capture'")
 
-        task_id = str(uuid4())
+        # Reserve the same identity before the first AI request / work-card save.
+        task_id = task_id or str(uuid4())
+        if not re.fullmatch(r"[0-9a-fA-F-]{32,36}", task_id):
+            raise ValueError("invalid task ID")
         now = _utc_now()
         now_text = _datetime_to_text(now)
         completed_at_text = now_text if normalized_status == "completed" else None

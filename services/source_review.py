@@ -6,7 +6,7 @@ REVIEW_PATTERN = re.compile(r"⟦[^⟧\n]*(?:⟧|$)|\[확인 필요\]", re.MULTI
 
 def review_spans(text):
     return sorted(set([(m.start(), m.end()) for m in REVIEW_PATTERN.finditer(text)] +
-                      [(d.start, d.end) for d in date_mentions(text) if not d.valid]))
+                      [(d.start, d.end) for d in date_mentions(text) if not d.valid or d.weekday_matches is False]))
 
 def tabular_blocks(text):
     """Keep empty cells and row order; never infer merged cells or headers."""
@@ -27,7 +27,7 @@ def highlight_source(widget):
     widget.tag_configure('source_date', foreground='#117568')
     widget.tag_remove('source_date', '1.0', 'end')
     for d in date_mentions(text):
-        if d.valid:
+        if d.valid and d.weekday_matches is not False:
             widget.tag_add('source_date', f'1.0+{d.start}c', f'1.0+{d.end}c')
     for start, end in review_spans(text):
         # Text's +Nc traversal counts Unicode characters, unlike Tcl string length.

@@ -17,12 +17,18 @@ actions는 원문에 나온 모든 담당자·대상별 업무를 빠짐없이 �
 명단 안내·결과 발표를 학교의 제출 업무로 바꾸지 않는다. 표의 행 제목 '참가접수'와 '명단안내'를 합쳐 하나의 행동으로 만들지 않는다.
 예: 담임이 명단 제출, 행정실이 비용 처리하는 공문이면 두 업무를 각 담당자와 함께 모두 포함한다.
 원문에 없는 준비·독촉·현장 지원을 추가하지 않는다. 하나의 제출 업무는 하나의 action으로 유지한다.
+action은 해야 할 행동과 제출물만 간결히 쓰고 날짜·시간·담당·제출처·조건은 각 전용 필드에만 쓴다. action 안에 기한을 중복 기재하지 않는다.
 표는 탭으로 나뉜 셀이다. 같은 행에서도 열 제목이 다르면 서로 다른 행사·기관의 일정이다. 셀의 기한과 다른 열의 업무를 혼합하지 않는다.
 ↳는 HWPX의 병합 셀에서 이어진 값이다. deadline은 해당 업무 셀의 날짜·시간·예정/까지 표현을 그대로 보존한다.
 evidence는 업무 행동 자체를 뒷받침하는 원문 위치이다. 담당·기한·제출물·제출처는 field_evidence의 해당 필드에 별도의 원문 위치를 연결한다.
 일정표와 행정사항처럼 위치가 떨어져 있어도 같은 행사·대상·업무인 경우에만 연결한다. 문서의 다른 위치에 값이 있다는 이유만으로 연결하지 않는다.
 기한 근거는 해당 열의 날짜 셀을 선택한다. 없는 필드 또는 해당 없는 제출물·제출처는 값은 빈 문자열, 근거 좌표는 0으로 두고 확인 질문을 만들지 않는다.
-각 항목은 action(구체적 행동), owner(원문 담당자/대상), deadline(원문 기한),
+각 항목은 action(구체적 행동), owner(수행 담당자), target(수혜·참여 대상), deadline(제출·신청 기한),
+event_date(행사 실시일), report_date(결과 보고일), condition(원문 조건), obligation(필수/조건부/안내/추가 제안/판단 유보)를 구분한다.
+희망 학교만은 조건부, 해당 없음 제출 생략과 해당 없어도 없음으로 회신은 서로 다르다. 조건을 지우지 않는다.
+상대 기한·연도 미상·예정 표현을 보존하며 현재 연도나 18:00 같은 시간을 추측하지 않는다. 날짜/요일이 상충하면 질문에 구체적으로 남긴다.
+담당·대상·조건·행사일·보고일은 각각의 field_evidence 위치를 연결한다. owner에 참가 대상 학생을 대신 넣지 않는다.
+일부 캡처나 확인하지 못한 붙임이 있을 때 전체 업무가 없다고 단정하지 않는다.
 deliverable(제출물/첨부 이름), destination(제출처/방법), evidence(원문 위치),
 kind(명시된 의무 또는 추천 실행)를 가진다. 원문에 없는 사실은 빈 문자열로 남긴다.
 원문에 '학교는 신청서를 제출한다'처럼 명시된 행동은 명시된 의무이다. 세부 제출 채널이나 내부 담당 이름이 없다는 이유로 확인 필요로 바꾸지 않는다.
@@ -35,7 +41,7 @@ questions의 기본은 빈 배열이다. 실제로 상충하는 기한·대상�
 
 def analyze_document_task(text, output_mode="업무 일정·체크리스트", *, raise_errors=False,
                           role="담당 미지정", model=None, on_preview=None,
-                          cancel_event=None, cache_dir=None, on_metrics=None):
+                          cancel_event=None, cache_dir=None, on_metrics=None, on_document=None):
     text = text.strip()
     if not text:
         if raise_errors:
@@ -80,7 +86,7 @@ def analyze_document_task(text, output_mode="업무 일정·체크리스트", *,
                 instructions += "\n학부모에게 안내할 근거가 없는 내부 업무 공문이면 message는 빈 문자열로 두고 questions에 사유를 쓴다."
             with OpenAI(api_key=api_key, timeout=90, max_retries=1) as client:
                 with client.responses.stream(
-                    model=model, instructions=instructions,
+                    model=model, instructions=instructions, store=False,
                     input=source_input(text),
                     max_output_tokens=6000,
                     text={**({"verbosity": "low"} if model.startswith("gpt-5") else {}), "format": {"type": "json_schema", "name": "work_plan", "strict": True,
@@ -106,14 +112,18 @@ def analyze_document_task(text, output_mode="업무 일정·체크리스트", *,
                 else:
                     parsed = resolve_document(parsed, text)
                     parsed, review_status = repair_actions(client, parsed, text, model, options, check_cancel)
-                    document = verify_evidence(parsed, text)
+                    # Keep the proposal, including uncertain values, for editable cards.
+                    # Only the legacy text renderer blanks unsupported values.
+                    document = parsed
             check_cancel()
             if cache and review_status != 'failed':
                 cache.put(key, document)
         check_cancel()
+        if on_document:
+            on_document(document)
         if on_metrics:
             on_metrics({"model": model, "seconds": round(time.perf_counter() - started, 2), "cached": cached, "review": review_status})
-        return render_document(document, output_mode, source=text)
+        return render_document(verify_evidence(document, text), output_mode, source=text)
     except Exception as exc:
         if raise_errors:
             raise

@@ -3,12 +3,23 @@ import json
 import re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
-from services.date_evidence import supported_deadline, source_schedules
+from services.date_evidence import supported_deadline, source_schedules, date_status, date_mentions
+
+OBLIGATIONS = ('필수', '조건부', '안내', '추가 제안', '판단 유보')
+ACTION_FIELDS = ('action', 'owner', 'target', 'condition', 'obligation', 'deadline', 'event_date', 'report_date', 'deliverable', 'destination')
+FIELD_LABELS = {'action': '해야 할 일', 'owner': '담당', 'target': '대상', 'condition': '업무 조건',
+                'obligation': '업무 구분', 'deadline': '제출 기한', 'event_date': '행사일', 'report_date': '보고일',
+                'deliverable': '제출물', 'destination': '제출처'}
+EVIDENCE_FIELDS = ('owner', 'target', 'condition', 'deadline', 'event_date', 'report_date', 'deliverable', 'destination')
 
 class FieldEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
     owner: str = ""
+    target: str = ""
+    condition: str = ""
     deadline: str = ""
+    event_date: str = ""
+    report_date: str = ""
     deliverable: str = ""
     destination: str = ""
 
@@ -21,6 +32,11 @@ class Action(BaseModel):
     destination: str
     evidence: str
     kind: Literal["명시된 의무", "추천 실행", "확인 필요"]
+    target: str = ""
+    condition: str = ""
+    obligation: Literal['필수', '조건부', '안내', '추가 제안', '판단 유보'] = '판단 유보'
+    event_date: str = ""
+    report_date: str = ""
     task_type: Literal["학교 업무", "외부 기관 업무", "참고 일정"] = "학교 업무"
     requires_submission: bool = True
     field_evidence: FieldEvidence = Field(default_factory=FieldEvidence)
@@ -88,12 +104,127 @@ def _normalized(text):
 def valid_quote(quote, source):
     return bool(quote.strip()) and _normalized(quote) in _normalized(source) and not re.search(r'⟦|\[확인 필요\]', quote)
 
+def assess_conditions(text, attachment_available=None):
+    """Classify only an action's own cited passages, never unrelated event text."""
+    compact = re.sub(r'\s+', '', text)
+    result = {'obligation': '판단 유보', 'issues': []}
+    if '붙임' in compact and ('참조' in compact or '세부' in compact) and attachment_available is not True:
+        result['issues'].append('붙임 확인 필요: 가져온 자료만으로 세부 의무를 확정할 수 없습니다.')
+        return result
+    no_applicable = bool(re.search(r'해당(?:사항)?(?:이)?없', compact))
+    omitted = bool(re.search(r'(?:제출|회신).*(?:생략|불필요|하지않)', compact))
+    if no_applicable and omitted:
+        result.update(obligation='조건부', issues=['해당 여부 확인 후 제출·회신 생략 조건 적용'])
+    elif no_applicable and re.search(r'회신|보고|제출', compact):
+        # "None" is a response value, not permission to drop the task.
+        result.update(obligation='필수', issues=['해당 없음도 회신·보고·제출 필요'])
+    elif re.search(r'희망(?:하는)?(?:학교|학급|학생|자)|(?:참가|참여)를?희망|해당(?:하는)?학교만', compact):
+        result['obligation'] = '조건부'
+    elif re.search(r'(?:모든|각|전체)학교.*(?:제출|회신|보고)', compact):
+        result['obligation'] = '필수'
+    elif re.search(r'참고(?:하시기|바랍니다|용)|정보성안내', compact) and not re.search(r'제출|회신|보고', compact):
+        result['obligation'] = '안내'
+    return result
+
+
+def scope_notice(partial=True, has_actions=False):
+    if has_actions:
+        return '가져온 범위의 업무 초안입니다. 원문과 적용 조건을 확인하세요.'
+    if partial:
+        return '가져온 범위에서는 제출 업무를 확인하지 못했습니다. 누락된 페이지·붙임을 확인하세요.'
+    return '분석한 자료에서 제출 업무를 확인하지 못했습니다. 업무가 없다는 확정은 아닙니다.'
+
+
+def _quote_locations(quote, source):
+    """Local positions only. Multiple matches deliberately remain ambiguous."""
+    if not quote or not valid_quote(quote, source):
+        return []
+    result = []
+    wanted = _normalized(quote)
+    for number, line in enumerate(source.splitlines(), 1):
+        if wanted not in _normalized(line):
+            continue
+        if '\t' in line:
+            cells = [{'line': number, 'cell': i} for i, cell in enumerate(line.split('\t'), 1)
+                     if wanted in _normalized(cell)]
+            result.extend(cells or [{'line': number, 'cell': 0}])
+        else:
+            result.append({'line': number, 'cell': 0})
+    return result
+
+
+def action_card_data(action, source=None, *, attachment_available=None):
+    """Keep raw suggestions with field-specific review facts; never erase them.
+
+    Quote matching is not a proof of action semantics or original OCR accuracy.
+    Source IDs/versions and durable teacher edits are added by the card store.
+    """
+    payload = action.model_dump()
+    source = source or ''
+    primary_valid = valid_quote(action.evidence, source)
+    field_data, field_issues, date_states = {}, {}, {}
+    issues = [] if primary_valid else ['업무 근거 확인 필요']
+    for field in ACTION_FIELDS:
+        value = getattr(action, field)
+        quote = getattr(action.field_evidence, field, '') or action.evidence
+        verified = valid_quote(quote, source)
+        problem = []
+        if field in ('action', 'obligation'):
+            if not verified:
+                problem.append('근거 확인 필요')
+        elif value:
+            if field in ('deadline', 'event_date', 'report_date'):
+                supported = supported_deadline(value, quote) if verified else None
+                verified = verified and supported is not None
+                if supported is not None:
+                    payload[field] = supported
+                date_states[field] = date_status(payload[field])
+                problem.extend(date_states[field]['issues'])
+                if len(date_mentions(quote)) > 1 and not verified:
+                    problem.append('여러 날짜의 역할·충돌 확인 필요')
+            else:
+                verified = verified and _normalized(value) in _normalized(quote)
+            if not verified:
+                problem.append('근거 확인 필요')
+        else:
+            verified = False
+        if field in ('deliverable', 'destination') and not action.requires_submission:
+            verified = False
+            if value:
+                problem.append('비제출 업무의 제출 정보 적용 여부 확인')
+        locations = _quote_locations(quote, source)
+        if len(locations) > 1:
+            problem.append('동일 근거가 여러 위치에 있음')
+        field_data[field] = {'value': payload[field], 'quote': quote, 'verified': verified,
+                             'issues': list(dict.fromkeys(problem)), 'locations': locations}
+        if problem:
+            field_issues[field] = list(dict.fromkeys(problem))
+            issues.extend(f'{FIELD_LABELS[field]}: {item}' for item in field_issues[field])
+    condition_quote = action.field_evidence.condition or action.evidence
+    condition_text = '\n'.join(dict.fromkeys(q for q in (action.evidence, condition_quote) if valid_quote(q, source)))
+    assessed = assess_conditions(condition_text, attachment_available)
+    if assessed['obligation'] != '판단 유보' or assessed['issues']:
+        payload['obligation'] = assessed['obligation']
+    elif action.kind == '추천 실행':
+        payload['obligation'] = '추가 제안'
+    elif action.task_type == '참고 일정':
+        payload['obligation'] = '안내'
+    if not primary_valid and payload['obligation'] != '추가 제안':
+        payload['obligation'] = '판단 유보'
+    field_data['obligation']['value'] = payload['obligation']
+    issues.extend(assessed['issues'])
+    payload.update(fields=field_data, field_issues=field_issues, date_states=date_states,
+                   issues=list(dict.fromkeys(issues)))
+    return payload
+
+
 def inspect_action(action, source):
     """One action-level issue, or field-level issues; never cascade both."""
     if not valid_quote(action.evidence, source):
         return ['업무 근거']
     issues = []
-    for field, label in (("owner", "담당"), ("deadline", "기한"), ("deliverable", "제출물"), ("destination", "제출처")):
+    for field, label in (("owner", "담당"), ("target", "대상"), ("condition", "조건"), ("deadline", "기한"),
+                         ("event_date", "행사일"), ("report_date", "보고일"), ("deliverable", "제출물"), ("destination", "제출처")):
         if not action.requires_submission and field in ('deliverable', 'destination'):
             continue
         value = getattr(action, field)
@@ -101,7 +232,7 @@ def inspect_action(action, source):
             continue  # Not supplied / not applicable is not a validation error.
         quote = getattr(action.field_evidence, field) or action.evidence
         supported = valid_quote(quote, source)
-        if field == 'deadline':
+        if field in ('deadline', 'event_date', 'report_date'):
             supported = supported and supported_deadline(value, quote) is not None
         else:
             supported = supported and _normalized(value) in _normalized(quote)
@@ -118,15 +249,16 @@ def verify_evidence(document, source):
         issues = inspect_action(action, source)
         if '업무 근거' in issues:
             action.evidence = ""
-        for field, label in (("owner", "담당"), ("deadline", "기한"), ("deliverable", "제출물"), ("destination", "제출처")):
+        for field, label in (("owner", "담당"), ("target", "대상"), ("condition", "조건"), ("deadline", "기한"),
+                             ("event_date", "행사일"), ("report_date", "보고일"), ("deliverable", "제출물"), ("destination", "제출처")):
             value = getattr(action, field)
             if not value:
                 setattr(action.field_evidence, field, "")
             if label in issues or '업무 근거' in issues:
                 setattr(action, field, "")
                 setattr(action.field_evidence, field, "")
-            elif field == 'deadline' and value:
-                action.deadline = supported_deadline(value, action.field_evidence.deadline or action.evidence)
+            elif field in ('deadline', 'event_date', 'report_date') and value:
+                setattr(action, field, supported_deadline(value, getattr(action.field_evidence, field) or action.evidence))
         if issues:
             action.kind = "확인 필요"
             document.questions.append(f"{action.action}: {'·'.join(issues)} 연결 확인 필요")
@@ -134,7 +266,9 @@ def verify_evidence(document, source):
     return document
 
 def action_details(action):
-    values = [('담당', action.owner or '원문 미기재'), ('기한', action.deadline), ('제출물', action.deliverable), ('제출처', action.destination)]
+    values = [('담당', action.owner or '원문 미기재'), ('대상', action.target), ('조건', action.condition),
+              ('기한', action.deadline), ('행사일', action.event_date), ('보고일', action.report_date),
+              ('제출물', action.deliverable), ('제출처', action.destination)]
     return ' · '.join(f'{label}: {value}' for label, value in values if value)
 
 def partial_actions(buffer, action_model=Action):

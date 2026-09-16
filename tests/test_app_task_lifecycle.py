@@ -9,6 +9,7 @@ from PIL import Image
 from services.capture_store import CaptureStore
 from services.task_store import TaskStore
 from ui.app import SsoklyApp
+from tests.transfer_fixtures import approve_synthetic_transfer
 
 
 class AppTaskLifecycleTestCase(unittest.TestCase):
@@ -81,7 +82,7 @@ class AppTaskLifecycleTestCase(unittest.TestCase):
         self.assertEqual(self.app.stream_preview.get("1.0", "end-1c"), "생성 중")
         self.assertEqual(self.app.result_text.get("1.0", "end-1c"), "사용자가 편집")
 
-    def test_capture_and_reread_automatically_use_nano(self):
+    def test_capture_and_reread_use_nano_after_explicit_transfer_approval(self):
         from PIL import Image
         image = Image.new("RGB", (100, 100))
         with mock.patch.object(self.app, "_start_worker_operation") as start:
@@ -101,6 +102,9 @@ class AppTaskLifecycleTestCase(unittest.TestCase):
             self.assertEqual(cloud.call_args.kwargs["model_override"], "gpt-5-nano")
 
     def setUp(self) -> None:
+        transfer = mock.patch('ui.app.choose_transfer', side_effect=approve_synthetic_transfer)
+        transfer.start()
+        self.addCleanup(transfer.stop)
         self.temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_directory.cleanup)
         self.root = Path(self.temp_directory.name)

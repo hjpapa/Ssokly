@@ -5,6 +5,8 @@ import re
 
 DATE = re.compile(r'(?<![\d.])(?:(?P<y>\d{4})\s*[년./-]\s*)?(?P<m>\d{1,2})\s*[월./-]\s*(?P<d>\d{1,2})(?:\s*일|\.(?!\d)|(?=\s|\(|$|~|～|–|부터|까지))')
 TIME = re.compile(r'(\d{1,2})\s*(?::|시)\s*(?:(\d{1,2})\s*분?)?')
+RELATIVE_DATE = re.compile(r'(?:행사|대회|교육|연수|공문\s*접수|접수|통보|안내)(?:일)?\s*(?:후|전)?\s*\d+\s*(?:일|주|개월)\s*(?:전|후|이내)')
+WEEKDAYS = '월화수목금토일'
 
 @dataclass
 class DateMention:
@@ -16,6 +18,14 @@ class DateMention:
     start: int
     end: int
     valid: bool
+    weekday: str = ''
+    calendar_weekday: str = ''
+
+    @property
+    def weekday_matches(self):
+        if not self.weekday or not self.calendar_weekday:
+            return None
+        return self.weekday == self.calendar_weekday
 
 def date_mentions(text):
     matches = list(DATE.finditer(text))
@@ -26,7 +36,7 @@ def date_mentions(text):
         limit = matches[i+1].start() if i+1 < len(matches) else len(text)
         tail = text[match.end():limit]
         # Time belongs to this date only when adjacent, never across a cell/line.
-        suffix = re.match(r'(?:\([월화수목금토일](?:요일)?\))? *(?:(?:/ *)?(?:\d{1,2}(?::\d{2}|시(?: *\d{1,2}분)?))(?: *[~～–-] *\d{1,2}(?::\d{2}|시(?: *\d{1,2}분)?))?)? *(?:까지|예정)?', tail)
+        suffix = re.match(r' *(?:\([월화수목금토일](?:요일)?\))? *(?:(?:/ *)?(?:\d{1,2}(?::\d{2}|시(?: *\d{1,2}분)?))(?: *[~～–-] *\d{1,2}(?::\d{2}|시(?: *\d{1,2}분)?))?)? *(?:까지|예정)?', tail)
         end = match.end() + (suffix.end() if suffix else 0)
         times = tuple((int(t[0]), int(t[1] or 0)) for t in TIME.findall(text[match.end():end]))
         try:
@@ -34,8 +44,31 @@ def date_mentions(text):
             valid = all(h < 24 and minute < 60 for h, minute in times)
         except ValueError:
             valid = False
-        result.append(DateMention(year, month, day, times, text[match.start():end].strip(), match.start(), end, valid))
+        weekday_match = re.match(r' *\(([월화수목금토일])(?:요일)?\)', tail)
+        weekday = weekday_match[1] if weekday_match else ''
+        calendar_weekday = WEEKDAYS[date(year, month, day).weekday()] if year and valid else ''
+        result.append(DateMention(year, month, day, times, text[match.start():end].strip(), match.start(), end, valid,
+                                  weekday, calendar_weekday))
     return result
+
+
+def date_status(value):
+    """Explain uncertainty without filling an omitted year/time or relative base."""
+    dates = date_mentions(value)
+    issues = []
+    for item in dates:
+        if not item.valid:
+            issues.append('유효하지 않은 날짜·시간')
+        if item.year is None:
+            issues.append('연도 미지정')
+        if item.weekday_matches is False:
+            issues.append(f'날짜·요일 불일치: 원문 {item.weekday}요일 / 달력 {item.calendar_weekday}요일')
+    relative = bool(RELATIVE_DATE.search(value))
+    if relative:
+        issues.append('상대 기한: 기준일 확인 필요')
+    return {'raw': value, 'year_specified': bool(dates) and all(d.year is not None for d in dates),
+            'time_specified': bool(dates) and all(bool(d.times) for d in dates),
+            'relative': relative, 'issues': list(dict.fromkeys(issues))}
 
 def supported_deadline(value, evidence):
     proposed, actual = date_mentions(value), date_mentions(evidence)

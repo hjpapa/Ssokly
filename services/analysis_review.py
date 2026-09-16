@@ -40,7 +40,7 @@ evidence는 행동 자체의 원문 위치이다. field_evidence는 담당·기�
         if model.startswith('gpt-5'):
             review_options['reasoning'] = {'effort': 'low'}
         response = client.with_options(timeout=30, max_retries=0).responses.create(
-            model=model, instructions=instructions,
+            model=model, instructions=instructions, store=False,
             input=json.dumps(payload, ensure_ascii=False), max_output_tokens=5000,
             text={'format': {'type': 'json_schema', 'name': 'action_review', 'strict': True,
                              'schema': strict_schema(ReviewResult)}}, **review_options)
