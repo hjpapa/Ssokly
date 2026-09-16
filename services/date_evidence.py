@@ -165,6 +165,97 @@ def supported_deadline(value, evidence):
         return value
     return surface
 
+# Literal table heading vocabulary, not an inference of dates or event ownership.
+# Unknown layouts deliberately fall back to source row/cell labels.
+_TABLE_STUB_HEADINGS = {
+    '구분', '항목', '번호', '연번', '순번', '순', '대상', '학교급', '학교', '학교명',
+    '학년', '학급', '지역', '기관', '기관명', '행사', '행사명', '대회', '대회명',
+    '사업', '사업명', '프로그램', '프로그램명', '업무', '업무명', '단계', '절차', '내용',
+}
+_TABLE_DETAIL_HEADINGS = {
+    '신청', '접수', '신청일', '신청 기한', '신청 마감', '접수 기한', '접수 마감', '기한', '마감',
+    '일시', '일정', '날짜', '기간', '행사', '행사일', '실시', '실시일', '대회일',
+    '보고', '보고일', '발표', '결과 발표', '장소', '담당', '대상', '초', '중', '고',
+    '초등', '중등', '고등', '초등학교', '중학교', '고등학교',
+}
+_TABLE_STRONG_HEADINGS = {'구분', '항목', '번호', '연번', '순번', '순'}
+_TABLE_ENTITY_HEADINGS = {'행사명', '대회명', '사업명', '프로그램명', '학교명', '기관명', '업무명'}
+
+
+def _table_context_cell(value):
+    value = value.removeprefix('↳ ').strip()
+    return '' if value == '↳' or re.search(r'⟦|\[확인 필요\]', value) else value
+
+
+def _table_row_contexts(table):
+    """Keep only explicit same-column header layers and leading stub labels."""
+    headers, header_open = [], False
+    for row, line, _ in table:
+        clean = [_table_context_cell(cell) for cell in row]
+        dated = any(date_mentions(cell) for cell in row)
+        anchor = bool(clean and clean[0] in _TABLE_STUB_HEADINGS)
+        merged_title = (not dated and len(row) > 1 and all(clean)
+                        and len(set(clean)) == 1 and any(cell.startswith('↳ ') for cell in row[1:]))
+        same_width = bool(headers) and len(clean) == len(headers[-1])
+        children = [value for value in clean[1:] if value]
+        child_headings = bool(children) and all(value in _TABLE_DETAIL_HEADINGS for value in children)
+        continuation = (headers and header_open and same_width and not dated
+                        and ((not clean[0] and child_headings)
+                             or (row[0].startswith('↳ ') and clean[0] in _TABLE_STUB_HEADINGS
+                                 and any(clean[0] == header[0] for header in headers))
+                             or (anchor and child_headings and any(clean[0] == header[0] for header in headers))))
+        new_header = (anchor and (not headers or clean[0] in _TABLE_STRONG_HEADINGS
+                                 or clean in headers or any(clean[0] == header[0] for header in headers)))
+        if not dated and (new_header or merged_title or continuation):
+            previous_merged_title = bool(headers) and len(set(headers[-1])) == 1 and bool(headers[-1][0])
+            if continuation or (anchor and header_open and same_width and previous_merged_title):
+                headers.append(clean)
+            else:
+                # A repeated/changed heading starts a new context block. Never
+                # carry the original event order through a reordered long table.
+                headers = [clean]
+            header_open = True
+            yield None
+            continue
+        header_open = False
+        usable = bool(headers) and all(len(header) == len(clean) for header in headers)
+        stub_count = 0
+        if usable:
+            for header in headers:
+                count = 0
+                for value in header:
+                    if value not in _TABLE_STUB_HEADINGS:
+                        break
+                    count += 1
+                stub_count = max(stub_count, count)
+            # Generic words such as "내용" can be either a stub heading or the
+            # date-bearing value column of a key/value table. The first actual
+            # dated cell bounds the leading row-label region for this row.
+            first_date = next((index for index, cell in enumerate(row) if date_mentions(cell)), len(row))
+            stub_count = min(stub_count, first_date)
+        # Repeated entity columns separated by date columns may describe
+        # parallel event blocks. Leading labels are not shared ownership for
+        # those blocks; keep only direct column titles and an explicit location.
+        parallel_entities = usable and any(
+            value in _TABLE_ENTITY_HEADINGS and value in header[:stub_count]
+            for header in headers for value in header[stub_count:])
+        labels = clean[:stub_count] if usable and stub_count else clean[:1]
+        labels = [value for value in labels if value and not date_mentions(value)]
+        if parallel_entities:
+            labels = []
+        contexts = []
+        for index in range(len(clean)):
+            titles = [header[index] for header in headers] if usable and index >= stub_count else []
+            missing_title = not titles or any(not value for value in titles)
+            parts = list(dict.fromkeys(value for value in [*titles, *labels] if value))
+            if missing_title:
+                parts.append(f'원문 {line}행 {index + 1}열 (열 제목 확인 필요)')
+            elif parallel_entities:
+                parts.append(f'원문 {line}행 {index + 1}열 (행사 연결 확인 필요)')
+            contexts.append(' · '.join(parts))
+        yield contexts
+
+
 def source_schedule_entries(source):
     """Source dates with exact local row/cell/character positions, never pages.
 
@@ -181,16 +272,13 @@ def source_schedule_entries(source):
     def flush():
         if not table:
             return
-        first = table[0][0]
-        header = first if not date_mentions('\t'.join(first)) else [''] * len(first)
-        for row, line, offset in table:
-            label = ' · '.join(dict.fromkeys(c.removeprefix('↳ ').strip() for c in row[:2] if c and not date_mentions(c)))
+        for (row, line, offset), contexts in zip(table, _table_row_contexts(table)):
+            if contexts is None:
+                continue
             cell_offset = offset
             for i, cell in enumerate(row):
-                title = header[i].removeprefix('↳ ') if i < len(header) else ''
                 clean = cell.removeprefix('↳ ')
-                add(' · '.join(filter(None, (title, label))), clean, line, i + 1,
-                    cell_offset + len(cell) - len(clean))
+                add(contexts[i], clean, line, i + 1, cell_offset + len(cell) - len(clean))
                 cell_offset += len(cell) + 1
         table.clear()
     offset = 0

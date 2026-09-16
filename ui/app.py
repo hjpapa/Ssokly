@@ -5,7 +5,7 @@ import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk, font as tkfont
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
@@ -20,7 +20,8 @@ from services.transfer_policy import TransferPolicyStore, ScopeExpansionRequired
 from ui.transfer_dialog import choose_transfer
 from ui.work_cards import WorkCardsPanel
 from services.personal_todos import PersonalTodoStore, checklist_items
-from services.source_review import highlight_source, tabular_blocks
+from services.source_review import highlight_source, source_table_blocks
+from ui.source_tables import SourceTablesWindow
 from services.local_ocr import extract_local_text
 from services.diagram_service import generate_workflow_image
 from io import BytesIO
@@ -1051,55 +1052,11 @@ class SsoklyApp(tk.Tk):
             font=("Malgun Gothic", 10), bg=MINT_PANEL, relief=tk.FLAT, state=tk.DISABLED)
 
     def show_source_tables(self):
-        blocks = tabular_blocks(self.ocr_text.get("1.0", "end-1c"))
+        blocks = source_table_blocks(self.ocr_text.get("1.0", "end-1c"))
         if not blocks:
             messagebox.showinfo("표 인식 안내", "탭으로 구분된 표를 찾지 못했습니다. 표 전체를 선명하게 캡처해 다시 인식해 주세요. 병합 셀은 원본과 대조해야 합니다.")
             return
-        window = tk.Toplevel(self)
-        window.title("인식된 표 · 원문은 변경되지 않습니다")
-        window.geometry("800x440")
-        window.transient(self)
-        ttk.Label(window, text="행·열을 유지합니다. ↳는 병합 셀에서 이어진 내용입니다. 행을 선택하면 전체 내용을 볼 수 있습니다.").pack(anchor=tk.W, padx=10, pady=8)
-        notebook = ttk.Notebook(window)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=10)
-        for index, rows in enumerate(blocks, 1):
-            frame = ttk.Frame(notebook)
-            notebook.add(frame, text=f"표 {index}")
-            detail = scrolledtext.ScrolledText(frame, height=4, wrap=tk.WORD)
-            detail.pack(side=tk.BOTTOM, fill=tk.X)
-            detail.configure(state=tk.DISABLED)
-            columns = [str(i) for i in range(max(map(len, rows)))]
-            tree = ttk.Treeview(frame, columns=columns, show="headings")
-            table_font = tkfont.nametofont('TkDefaultFont')
-            for i in columns:
-                tree.heading(i, text=f"열 {int(i)+1}")
-                width = max((table_font.measure(row[int(i)]) + 24 for row in rows if int(i) < len(row)), default=150)
-                tree.column(i, width=max(100, min(620, width)), stretch=False)
-            vertical = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
-            horizontal = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=tree.xview)
-            tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
-            vertical.pack(side=tk.RIGHT, fill=tk.Y)
-            horizontal.pack(side=tk.BOTTOM, fill=tk.X)
-            tree.pack(fill=tk.BOTH, expand=True)
-            tree.tag_configure("review", foreground="#b42318")
-            from services.source_review import review_spans
-            for row in rows:
-                tree.insert('', tk.END, values=row + [''] * (len(columns)-len(row)), tags=('review',) if review_spans('\t'.join(row)) else ())
-            def show_row(event, table=tree, text=detail):
-                if not table.selection():
-                    return
-                values = table.item(table.selection()[0], 'values')
-                text.configure(state=tk.NORMAL)
-                text.delete('1.0', tk.END)
-                text.insert('1.0', '\n'.join(f'열 {i+1}: {value}' for i, value in enumerate(values)))
-                text.configure(state=tk.DISABLED)
-            tree.bind('<<TreeviewSelect>>', show_row)
-        def copy():
-            rows = blocks[notebook.index(notebook.select())]
-            self.clipboard_clear()
-            self.clipboard_append('\n'.join('\t'.join(row) for row in rows))
-            self.status_var.set("표를 복사했습니다. 스프레드시트에 붙여넣을 수 있습니다.")
-        ttk.Button(window, text="선택한 표 복사", command=copy).pack(pady=8)
+        return SourceTablesWindow(self, blocks, self.status_var.set)
 
     def _todo_window(self, title):
         window = tk.Toplevel(self)

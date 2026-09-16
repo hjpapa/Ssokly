@@ -69,6 +69,22 @@ class V2AppFlowTests(unittest.TestCase):
             '합성 응답', metadata))
         self.app._drain_worker_results()
 
+    def test_table_review_keeps_source_and_cards_unchanged(self):
+        source = '합성 표\n구분\t경제 체험\t과학 체험\n신청\t10월 2일\t2월 30일'
+        self.app._replace_ocr_text(source, track_change=True)
+        revision = self.app._source_revision
+        popup = self.app.show_source_tables()
+        self.addCleanup(popup.destroy)
+        popup.trees[0].selection_set('1')
+        popup.show_row(0)
+        self.assertIn('원문 3행', popup.details[0].get('1.0', 'end-1c'))
+        with patch.object(popup, 'clipboard_clear'), patch.object(popup, 'clipboard_append') as copied:
+            popup.copy_row()
+            copied.assert_called_once_with('신청\t10월 2일\t2월 30일')
+        self.assertEqual(self.app.ocr_text.get('1.0', 'end-1c'), source)
+        self.assertEqual(self.app._source_revision, revision)
+        self.assertEqual(self.app.work_cards.list_cards(self.app.document_id), [])
+
     def test_A01_A07_A09_save_reopen_current_todo_and_draft(self):
         self.finish_request(self.prepare_request())
         self.assertEqual(str(self.app.notebook.select()), str(self.app.cards_tab))

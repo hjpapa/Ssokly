@@ -6,6 +6,19 @@
 
 ## 단계별 후속 검증 — 2026-09-17
 
+### 긴 표·병합 셀·표 보기 개선 검증
+
+- 합성 HWPX·전사 텍스트·임시 저장소·Tk 위젯을 사용하며 실제 공문/사용자 DB·API·키를 검증 입력으로 사용하지 않음. 클립보드 호출은 mock으로 검사하여 사용자 클립보드는 덮어쓰지 않음.
+- 중간 `.venv\Scripts\python.exe -m unittest tests.test_hwpx_structure tests.test_table_schedule_context tests.test_source_tables_ui tests.test_source_review tests.test_v2_app_flow -q`: **60개 통과, 10.588초**.
+- 중간 `.venv\Scripts\python.exe -m unittest discover -s tests -q`: **381개 통과, 33.533초**. 이후 독립 검토의 행사명 반복 머리글·병렬 행사 열·셀/행을 넘나드는 날짜 강조 3종 결함에 회귀 4개를 추가함. 이 수치는 최종 결과가 아님.
+- 최종 같은 전체 명령: **385개 통과, 54.678초, 건너뜀 없음**. 직전 단계 346개에 표 일정 15개·HWPX 15개·표 UI/검출 7개·검수 1개·실제 앱 연결 1개 추가.
+- 최종 `.venv\Scripts\python.exe tools/verify_v2_release.py`: **228개 통과, 25.268초**, 실패/오류/건너뜀/통신 시도 모두 0. 새 HWPX/표 일정/표 UI 및 기존 원문 검수 모듈을 차단 검증 목록에 추가.
+- 추가 회귀의 과정: 행사명 반복·병렬 행사 2개는 수정 전 실패 재현 후 집중 82개 통과(0.441초). 셀/행별 날짜 강조 추가 시험에서는 테스트의 기대 원문 행 번호 오기 1개로 집중 24개 중 1개 실패 → 기대값 정정 후 24개 통과(0.434초). 위 최종 전체 수치는 이 정정 이후 결과.
+- 최종 `.venv\Scripts\python.exe tools/verify_release.py`: `passed: true`, `live: false`. `compileall -q services ui tests tools`, `pip check`, README/STATUS/VALIDATION의 로컬 링크, `git diff --check` 통과. 기존 Pillow 폐기 예정 경고와 의도적 재검토 실패 로그는 테스트 실패가 아님.
+- HWPX: 122행·앞뒤/중간 빈 셀·가로/세로 병합·빈 병합·중첩 표·줄바꿈/탭과 XML tail·좌표 기반 열 순서·기존 단일열 문단/누락 span 호환. 잘못된 좌표/차원/span·겹침·메타데이터 중복·섹션 이름/번호의 안전 오류를 검사.
+- 표 일정: 2·3단 머리글·반복 머리글 순서 변경·다른 행사 셀의 비날짜 값 혼입·앞쪽 분류 열·빈 제목/열 수 불일치/미지원 머리글의 위치 안내·CRLF 100행/200날짜의 정확한 문자/행/셀 위치를 검사.
+- UI: 첫 행 상세·빈 셀·원문 행 번호·유효 날짜와 잘못된 날짜의 개별 강조·긴 내용 및 ragged 행의 복사·선택한 표 탭·병합 표시 보존. 실제 앱의 표 창 호출이 원문/변경 버전/업무 카드를 변경하지 않는지 검사. OS 실제 붙여넣기·사용자 마우스 손 조작·실물 지면 일치 확인은 아님.
+
 ### 재시작 후 재개 검증
 
 - 재개 기준 `a575f16`: `.venv\Scripts\python.exe tools/verify_v2_release.py` 161개 통과(14.230초), 실패·건너뜀·통신 시도 0. Git fetch 후 원격 main 차이 0/0.

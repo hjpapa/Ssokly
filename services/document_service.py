@@ -51,11 +51,19 @@ def read_text_file(path: Path) -> str:
 
 def read_hwpx_file(path: Path) -> str:
     with zipfile.ZipFile(path) as archive:
-        section_names = sorted((
-            name
-            for name in archive.namelist()
-            if name.startswith("Contents/section") and name.endswith(".xml")
-        ), key=lambda name: int(re.search(r'section(\d+)', name).group(1)))
+        sections = {}
+        for name in archive.namelist():
+            if not (name.startswith('Contents/section') and name.endswith('.xml')):
+                continue
+            match = re.fullmatch(r'Contents/section([0-9]+)\.xml', name)
+            if match is None:
+                raise ValueError('HWPX 본문 섹션 이름이 올바르지 않습니다.')
+            number = match.group(1).lstrip('0') or '0'
+            if number in sections:
+                raise ValueError('HWPX 본문 섹션 번호가 중복되었습니다.')
+            sections[number] = name
+        # Numeric order without unbounded integer parsing of archive names.
+        section_names = [sections[number] for number in sorted(sections, key=lambda number: (len(number), number))]
         if not section_names:
             raise ValueError("HWPX 본문 섹션을 찾지 못했습니다.")
 
@@ -66,11 +74,21 @@ def read_hwpx_file(path: Path) -> str:
         return "\n".join(paragraphs)
 
 
-def _read_blocks(node):
+def _text_content(node):
+    """Preserve control boundaries and XML tails inside a text run."""
+    parts = [node.text or '']
+    for child in node:
+        kind = _local_name(child.tag)
+        parts.append('\n' if kind == 'lineBreak' else '\t' if kind == 'tab' else _text_content(child))
+        parts.append(child.tail or '')
+    return ''.join(parts)
+
+
+def _read_blocks(node, *, in_cell=False):
     """Traverse each text run exactly once; tables own their nested paragraphs."""
     tag = _local_name(node.tag)
     if tag == 'tbl':
-        return _read_table(node)
+        return _read_table(node, nested=in_cell)
     if tag == 'p':
         chunks, text = [], []
         def visit(child):
@@ -79,11 +97,13 @@ def _read_blocks(node):
                 if text:
                     chunks.append(''.join(text).strip())
                     text.clear()
-                chunks.extend(_read_table(child))
+                chunks.extend(_read_table(child, nested=in_cell))
             elif kind == 't':
-                text.append(''.join(child.itertext()))
+                text.append(_text_content(child))
             elif kind == 'lineBreak':
-                text.append(' ')
+                text.append('\n')
+            elif kind == 'tab':
+                text.append('\t')
             else:
                 for sub in child:
                     visit(sub)
@@ -94,36 +114,60 @@ def _read_blocks(node):
         return [chunk for chunk in chunks if chunk]
     result = []
     for child in node:
-        result.extend(_read_blocks(child))
+        result.extend(_read_blocks(child, in_cell=in_cell))
     return result
 
 
-def _read_table(table):
-    rows, cols = int(table.get('rowCnt', '1')), int(table.get('colCnt', '1'))
+def _table_integer(node, attribute, message):
+    value = node.get(attribute)
+    if value is None or re.fullmatch(r'[0-9]+', value) is None:
+        raise ValueError(message)
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(message) from None
+
+
+def _read_table(table, *, nested=False):
+    size_error = 'HWPX 표 크기가 올바르지 않거나 지원 범위를 벗어났습니다.'
+    cell_error = 'HWPX 표 셀 위치 또는 병합 범위가 올바르지 않습니다.'
+    rows, cols = (_table_integer(table, name, size_error) for name in ('rowCnt', 'colCnt'))
     if rows < 1 or cols < 1 or rows * cols > 100000:
-        raise ValueError('HWPX 표 크기가 지원 범위를 벗어났습니다.')
+        raise ValueError(size_error)
     grid = [[''] * cols for _ in range(rows)]
+    occupied = set()
     for tr in table:
         if _local_name(tr.tag) != 'tr':
             continue
         for cell in tr:
             if _local_name(cell.tag) != 'tc':
                 continue
-            props = {_local_name(n.tag): n for n in cell}
+            props = {}
+            for child in cell:
+                kind = _local_name(child.tag)
+                if kind in {'cellAddr', 'cellSpan', 'subList'} and kind in props:
+                    raise ValueError('HWPX 표 셀 구조가 중복되었습니다.')
+                props[kind] = child
             addr, span = props.get('cellAddr'), props.get('cellSpan')
             if addr is None:
-                continue
-            r, c = int(addr.get('rowAddr', '0')), int(addr.get('colAddr', '0'))
-            rs = int(span.get('rowSpan', '1')) if span is not None else 1
-            cs = int(span.get('colSpan', '1')) if span is not None else 1
-            value = ' / '.join(_read_blocks(props['subList'])) if 'subList' in props else ''
+                raise ValueError(cell_error)
+            r, c = (_table_integer(addr, name, cell_error) for name in ('rowAddr', 'colAddr'))
+            rs = _table_integer(span, 'rowSpan', cell_error) if span is not None else 1
+            cs = _table_integer(span, 'colSpan', cell_error) if span is not None else 1
+            if rs < 1 or cs < 1 or r >= rows or c >= cols or r + rs > rows or c + cs > cols:
+                raise ValueError(cell_error)
+            positions = [(ri, ci) for ri in range(r, r + rs) for ci in range(c, c + cs)]
+            if any(position in occupied for position in positions):
+                raise ValueError('HWPX 표 셀 위치 또는 병합 범위가 겹칩니다.')
+            occupied.update(positions)
+            value = ' / '.join(_read_blocks(props['subList'], in_cell=True)) if 'subList' in props else ''
             value = value.replace('\t', ' | ').replace('\n', ' / ')
-            for ri in range(r, min(rows, r + rs)):
-                for ci in range(c, min(cols, c + cs)):
-                    grid[ri][ci] = value if (ri, ci) == (r, c) else ('↳ ' + value if value else '')
+            for ri, ci in positions:
+                grid[ri][ci] = value if (ri, ci) == (r, c) else ('↳ ' + value if value else '')
     if cols == 1:
         return [row[0] for row in grid if row[0]]
-    return ['[표 · ↳는 병합 셀에서 이어지는 값]', *['\t'.join(row) for row in grid], '[/표]', '']
+    lines = ['\t'.join(row) for row in grid]
+    return lines if nested else ['[표 · ↳는 병합 셀에서 이어지는 값]', *lines, '[/표]', '']
 
 
 def _local_name(tag: str) -> str:

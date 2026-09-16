@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 SUITES = (
     'tests.test_v2_semantics', 'tests.test_date_context_regressions',
+    'tests.test_table_schedule_context', 'tests.test_hwpx_structure',
+    'tests.test_source_review', 'tests.test_source_tables_ui',
     'tests.test_card_outputs', 'tests.test_public_audience', 'tests.test_source_schedule_fallback',
     'tests.test_work_card_store', 'tests.test_work_cards_ui', 'tests.test_storage_faults',
     'tests.test_transfer_policy', 'tests.test_v2_transfer_integration',

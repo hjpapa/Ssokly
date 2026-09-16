@@ -17,6 +17,13 @@ class SourceReviewTests(unittest.TestCase):
         self.assertEqual(blocks[0][1], ['3학년', '', '담임'])
         self.assertEqual(tabular_blocks('표 없는 문장\n한 줄\t탭'), [])
 
+    def test_numbers_across_cells_and_rows_do_not_become_review_dates(self):
+        for separator in ('\t', '\n', '\r\n'):
+            with self.subTest(separator=separator):
+                self.assertEqual(review_spans('13.' + separator + '2.'), [])
+                text = '13.' + separator + '2월 30일'
+                self.assertEqual([text[a:b] for a, b in review_spans(text)], ['2월 30일'])
+
     def test_summary_does_not_include_unrequested_templates(self):
         doc = AnalysisDocument(title='안내', summary='행사 참가 여부를 확인합니다.', actions=[], questions=['기한 확인'], message='전달문')
         result = render_document(doc, '원문 요약')
