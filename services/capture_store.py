@@ -330,8 +330,13 @@ class CaptureStore:
         normalized_id = _required_identifier(capture_id, "capture_id")
         normalized_text = _required_string(text, "text")
         normalized_profile = _required_string(profile, "profile")
-        now_text = _datetime_to_text(_utc_now())
         with self._connection() as connection:
+            existing = self._select_capture_row(connection, normalized_id)
+            if existing is None:
+                raise CaptureNotFoundError(
+                    f"capture does not exist: {normalized_id}"
+                )
+            now_text = _next_datetime_text(existing["updated_at"])
             cursor = connection.execute(
                 """
                 UPDATE capture_items
@@ -358,8 +363,13 @@ class CaptureStore:
         normalized_id = _required_identifier(capture_id, "capture_id")
         normalized_error = _required_string(error, "error")
         normalized_profile = _required_string(profile, "profile")
-        now_text = _datetime_to_text(_utc_now())
         with self._connection() as connection:
+            existing = self._select_capture_row(connection, normalized_id)
+            if existing is None:
+                raise CaptureNotFoundError(
+                    f"capture does not exist: {normalized_id}"
+                )
+            now_text = _next_datetime_text(existing["updated_at"])
             cursor = connection.execute(
                 """
                 UPDATE capture_items
@@ -391,8 +401,6 @@ class CaptureStore:
             if expected_updated_at is not None
             else None
         )
-        verified_at = _utc_now()
-        now_text = _datetime_to_text(verified_at)
         with self._connection() as connection:
             row = self._select_capture_row(connection, normalized_id)
             if row is None:
@@ -404,6 +412,7 @@ class CaptureStore:
                     "다른 Ssokly 창에서 이 캡처가 수정되었습니다. "
                     "검수 중인 내용을 복사한 뒤 캡처를 다시 열어 주세요."
                 )
+            now_text = _next_datetime_text(row["updated_at"])
             where_clause = "id = ?"
             parameters: list[object] = [
                 verified_text,
@@ -447,8 +456,13 @@ class CaptureStore:
             if expected_updated_at is not None
             else None
         )
-        now_text = _datetime_to_text(_utc_now())
         with self._connection() as connection:
+            row = self._select_capture_row(connection, normalized_id)
+            if row is None:
+                raise CaptureNotFoundError(
+                    f"capture does not exist: {normalized_id}"
+                )
+            now_text = _next_datetime_text(row["updated_at"])
             where_clause = "id = ?"
             parameters: list[object] = [now_text, normalized_id]
             if expected_text is not None:
@@ -884,7 +898,7 @@ class CaptureStore:
             link["task_id"]
             for link in connection.execute(
                 "SELECT task_id FROM capture_links WHERE capture_id = ? "
-                "ORDER BY linked_at, task_id",
+                "ORDER BY task_id",
                 (row["id"],),
             ).fetchall()
         )
@@ -1103,6 +1117,15 @@ def _datetime_from_text(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _next_datetime_text(previous_text: str) -> str:
+    """Return a timestamp strictly newer than the previous concurrency token."""
+    now = _utc_now()
+    previous = _datetime_from_text(previous_text)
+    if now <= previous:
+        now = previous + timedelta(microseconds=1)
+    return _datetime_to_text(now)
 
 
 def _validated_datetime_text(value: datetime) -> str:

@@ -1,4 +1,5 @@
 from datetime import timezone
+from contextlib import closing
 import hashlib
 import os
 from pathlib import Path
@@ -76,7 +77,7 @@ class CaptureInboxStoreTests(unittest.TestCase):
         self.assertEqual(loaded.mode, original_mode)
         self.assertEqual(list(loaded.getdata()), original_pixels)
 
-        with sqlite3.connect(reopened.db_path) as connection:
+        with closing(sqlite3.connect(reopened.db_path)) as connection, connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         self.assertEqual(version, 2)
 
@@ -198,7 +199,7 @@ class CaptureInboxStoreTests(unittest.TestCase):
         capture_id = "existing-capture"
         created_at = "2026-08-25T01:02:03.000000+00:00"
         db_path = migration_inbox / "capture_inbox.sqlite3"
-        with sqlite3.connect(db_path) as connection:
+        with closing(sqlite3.connect(db_path)) as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE capture_items (
@@ -271,7 +272,7 @@ class CaptureInboxStoreTests(unittest.TestCase):
         self.assertFalse(record.is_verified)
         self.assertEqual(record.linked_task_ids, ("task-existing",))
         self.assertEqual(image_path.read_bytes(), image_bytes)
-        with sqlite3.connect(db_path) as connection:
+        with closing(sqlite3.connect(db_path)) as connection, connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         self.assertEqual(version, 2)
 

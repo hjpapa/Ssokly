@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -260,6 +260,10 @@ class TaskStore:
             parameters.append(_validated_datetime_text(expected_updated_at))
 
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = connection.execute("SELECT MAX(updated_at) FROM tasks").fetchone()[0]
+            if latest:
+                parameters[len(normalized_changes) - 1] = _datetime_to_text(max(_utc_now(), _datetime_from_text(latest) + timedelta(microseconds=1)))
             cursor = connection.execute(
                 f"UPDATE tasks SET {assignments} WHERE {where_clause}",
                 parameters,
@@ -298,6 +302,7 @@ class TaskStore:
         )
 
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT * FROM tasks WHERE id = ?",
                 (task_id,),
@@ -312,7 +317,8 @@ class TaskStore:
             if existing["status"] == normalized_status:
                 return self._record_from_row(existing)
 
-            now_text = _datetime_to_text(_utc_now())
+            latest = connection.execute("SELECT MAX(updated_at) FROM tasks").fetchone()[0]
+            now_text = _datetime_to_text(max(_utc_now(), _datetime_from_text(latest) + timedelta(microseconds=1)))
             completed_at_text = now_text if normalized_status == "completed" else None
             where_clause = "id = ?"
             parameters: list[Optional[str]] = [

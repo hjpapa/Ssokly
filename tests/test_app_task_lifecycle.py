@@ -12,6 +12,94 @@ from ui.app import SsoklyApp
 
 
 class AppTaskLifecycleTestCase(unittest.TestCase):
+    def test_source_highlighting_table_view_and_edits_preserve_text(self):
+        text = '😀 안내\n대상\t기한\n담임\t10월 2일\n⟦판독불가⟧'
+        self.app._replace_ocr_text(text, track_change=True)
+        ranges = self.app.ocr_text.tag_ranges('source_review')
+        highlighted = [self.app.ocr_text.get(ranges[i], ranges[i+1]) for i in range(0,len(ranges),2)]
+        self.assertNotIn('10월 2일', highlighted)
+        dates = self.app.ocr_text.tag_ranges('source_date')
+        self.assertEqual(self.app.ocr_text.get(dates[0], dates[1]), '10월 2일')
+        self.assertIn('⟦판독불가⟧', highlighted)
+        self.assertEqual(self.app.ocr_text.get('1.0','end-1c'), text)
+        self.app.show_source_tables()
+        dialog = next(w for w in self.app.winfo_children() if isinstance(w, tk.Toplevel))
+        self.assertIn('인식된 표', dialog.title())
+        dialog.destroy()
+        self.app._replace_ocr_text('수정 완료')
+        self.assertFalse(self.app.ocr_text.tag_ranges('source_review'))
+
+    def test_changed_source_blocks_personal_todo_dialog(self):
+        self.app._replace_ocr_text("기한 10월 2일")
+        self.app._finish_analysis("## 체크리스트\n- [ ] 10월 2일까지 제출", "업무 일정·체크리스트")
+        self.app._replace_ocr_text("기한 10월 9일", track_change=True)
+        with mock.patch("ui.app.messagebox.showinfo") as notice, mock.patch.object(self.app, "_todo_window") as window:
+            self.app.choose_personal_todos()
+        notice.assert_called_once()
+        window.assert_not_called()
+        self.assertEqual(self.app.personal_todos.list(), [])
+
+    def test_choose_personal_todo_and_complete_after_reopen(self):
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+        self.assertFalse(hasattr(self.app, 'role_var'))
+        self.app._replace_ocr_text("담임은 명단을 제출한다.")
+        self.app._finish_analysis("## 체크리스트\n- [ ] 명단 제출\n  담당: 담임 · 기한: 10월 5일\n- [ ] 비용 처리\n  담당: 행정실", "업무 일정·체크리스트")
+        self.app.choose_personal_todos()
+        dialog = next(w for w in self.app.winfo_children() if isinstance(w, tk.Toplevel))
+        widgets = list(descendants(dialog))
+        box = next(w for w in widgets if isinstance(w, tk.Listbox))
+        box.selection_set(0)
+        next(w for w in widgets if 'text' in w.keys() and w.cget('text') == '선택한 항목 담기').invoke()
+        rows = self.app.personal_todos.list()
+        self.assertEqual(len(rows), 1)
+        self.assertIn('담임', rows[0]['item'])
+        self.app.show_personal_todos()
+        dialog = next(w for w in self.app.winfo_children() if isinstance(w, tk.Toplevel))
+        widgets = list(descendants(dialog))
+        box = next(w for w in widgets if isinstance(w, tk.Listbox))
+        box.selection_set(0)
+        next(w for w in widgets if 'text' in w.keys() and w.cget('text') == '완료').invoke()
+        self.assertTrue(self.app.personal_todos.list()[0]['done'])
+        dialog.destroy()
+
+    def test_stream_preview_never_changes_saved_editor_and_drops_stale_updates(self):
+        import threading
+        self.app._replace_result_text("기존 실행안")
+        event = threading.Event()
+        self.app._active_operation_cancel_event = event
+        revisions = (self.app._source_revision, self.app._result_revision)
+        self.app._worker_results.put((event, self.app.current_context_id, "analysis_preview", True, "생성 중", {"revisions": revisions}))
+        self.app._drain_worker_results()
+        self.assertEqual(self.app.result_text.get("1.0", "end-1c"), "기존 실행안")
+        self.assertEqual(self.app.stream_preview.get("1.0", "end-1c"), "생성 중")
+        self.app._replace_result_text("사용자가 편집", track_change=True)
+        self.app._worker_results.put((event, self.app.current_context_id, "analysis_preview", True, "오래된 조각", {"revisions": revisions}))
+        self.app._drain_worker_results()
+        self.assertEqual(self.app.stream_preview.get("1.0", "end-1c"), "생성 중")
+        self.assertEqual(self.app.result_text.get("1.0", "end-1c"), "사용자가 편집")
+
+    def test_capture_and_reread_automatically_use_nano(self):
+        from PIL import Image
+        image = Image.new("RGB", (100, 100))
+        with mock.patch.object(self.app, "_start_worker_operation") as start:
+            self.app._run_ocr(image)
+        work = start.call_args.args[1]
+        with mock.patch("ui.app.extract_local_text") as local, mock.patch("ui.app.extract_text_from_image", return_value="nano 원문") as cloud:
+            self.assertEqual(work(), "nano 원문")
+            local.assert_not_called()
+            self.assertEqual(cloud.call_args.kwargs["model_override"], "gpt-5-nano")
+        self.assertEqual(self.app.analysis_model_var.get(), "gpt-5-nano")
+        self.assertEqual([button.cget("text") for button in self.app.template_buttons],
+                         ["업무 일정·체크리스트", "교직원 메신저", "학부모 메신저", "가정통신문 초안"])
+        with mock.patch.object(self.app, "_start_worker_operation") as start:
+            self.app._run_ocr(image, apply_mode="review")
+        with mock.patch("ui.app.extract_text_from_image", return_value="정밀 원문") as cloud:
+            self.assertEqual(start.call_args.args[1](), "정밀 원문")
+            self.assertEqual(cloud.call_args.kwargs["model_override"], "gpt-5-nano")
+
     def setUp(self) -> None:
         self.temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_directory.cleanup)

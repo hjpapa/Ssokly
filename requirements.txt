@@ -2,3 +2,10 @@ openai
 python-dotenv
 pillow
 mss
+pydantic>=2,<3
+winrt-Windows.Media.Ocr==3.2.1; sys_platform == "win32"
+winrt-Windows.Globalization==3.2.1; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging==3.2.1; sys_platform == "win32"
+winrt-Windows.Storage.Streams==3.2.1; sys_platform == "win32"
+winrt-Windows.Foundation==3.2.1; sys_platform == "win32"
+winrt-Windows.Foundation.Collections==3.2.1; sys_platform == "win32"

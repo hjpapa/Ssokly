@@ -186,6 +186,8 @@ class CaptureInboxUiTestCase(unittest.TestCase):
             corrected,
             self.app.current_output_mode,
             raise_errors=True,
+            model="gpt-5-nano", on_preview=mock.ANY,
+            cancel_event=mock.ANY, cache_dir=self.task_store.app_data_dir, on_metrics=mock.ANY,
         )
 
     def test_custom_current_edits_open_comparison_instead_of_auto_replace(self) -> None:

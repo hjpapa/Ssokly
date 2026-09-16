@@ -37,6 +37,15 @@ class WindowSettingsTests(unittest.TestCase):
 
 
 class WindowSettingsStoreTests(unittest.TestCase):
+    def test_old_model_preferences_migrate_without_losing_role(self):
+        store = WindowSettingsStore(app_data_dir=self.root)
+        store.save(WindowSettings(role="담임", ocr_engine="Windows 기본 OCR", analysis_model="gpt-5.6-luna", ocr_model="gpt-4.1-mini"))
+        loaded = store.load()
+        self.assertEqual(loaded.role, "담임")
+        self.assertEqual(loaded.ocr_engine, "OpenAI 정밀 OCR")
+        self.assertEqual(loaded.analysis_model, "gpt-5-nano")
+        self.assertEqual(loaded.ocr_model, "gpt-5-nano")
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
@@ -64,6 +73,10 @@ class WindowSettingsStoreTests(unittest.TestCase):
                 "compact_mode": True,
                 "always_on_top": True,
                 "opacity_percent": 96,
+                "role": "담당 미지정",
+                "ocr_engine": "OpenAI 정밀 OCR",
+                "analysis_model": "gpt-5-nano",
+                "ocr_model": "gpt-5-nano",
             },
         )
         self.assertEqual(list(settings_path.parent.glob(".custom.json.*.tmp")), [])

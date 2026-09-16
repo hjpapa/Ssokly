@@ -20,8 +20,15 @@ class WindowSettings:
     compact_mode: bool = False
     always_on_top: bool = False
     opacity_percent: int = MAX_OPACITY_PERCENT
+    role: str = "담당 미지정"
+    ocr_engine: str = "OpenAI 정밀 OCR"
+    analysis_model: str = "gpt-5-nano"
+    ocr_model: str = "gpt-5-nano"
 
     def __post_init__(self) -> None:
+        for field, default in (("role", "담당 미지정"), ("ocr_engine", "OpenAI 정밀 OCR"), ("analysis_model", "gpt-5-nano"), ("ocr_model", "gpt-5-nano")):
+            value = getattr(self, field)
+            object.__setattr__(self, field, value.strip()[:120] if isinstance(value, str) and value.strip() else default)
         object.__setattr__(
             self,
             "compact_mode",
@@ -80,6 +87,10 @@ class WindowSettingsStore:
             compact_mode=_safe_bool(payload.get("compact_mode"), default=False),
             always_on_top=_safe_bool(payload.get("always_on_top"), default=False),
             opacity_percent=_safe_opacity_percent(payload.get("opacity_percent")),
+            role=payload.get("role", "담당 미지정"),
+            ocr_engine="OpenAI 정밀 OCR",
+            analysis_model="gpt-5-nano",
+            ocr_model="gpt-5-nano",
         )
 
     def save(self, settings: WindowSettings) -> None:
@@ -91,6 +102,10 @@ class WindowSettingsStore:
             "compact_mode": settings.compact_mode,
             "always_on_top": settings.always_on_top,
             "opacity_percent": settings.opacity_percent,
+            "role": settings.role,
+            "ocr_engine": settings.ocr_engine,
+            "analysis_model": settings.analysis_model,
+            "ocr_model": settings.ocr_model,
         }
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
 

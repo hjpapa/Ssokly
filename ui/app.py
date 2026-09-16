@@ -5,13 +5,18 @@ import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk, font as tkfont
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from PIL import Image, ImageTk
 
 from services.ai_service import analyze_document_task
+from services.personal_todos import PersonalTodoStore, checklist_items
+from services.source_review import highlight_source, tabular_blocks
+from services.local_ocr import extract_local_text
+from services.diagram_service import generate_workflow_image
+from io import BytesIO
 from services.capture_service import capture_selected_region
 from services.capture_store import (
     CaptureConflictError,
@@ -59,7 +64,7 @@ CAPTURE_INBOX_PAGE_LIMIT = 250
 MAX_BATCH_OCR_ITEMS = 20
 OPERATION_PROGRESS_INTERVAL_MS = 250
 WINDOW_SETTINGS_SAVE_DELAY_MS = 250
-DEFAULT_OUTPUT_MODE = "통합 실행안"
+DEFAULT_OUTPUT_MODE = "업무 일정·체크리스트"
 NORMAL_WINDOW_GEOMETRY = "1480x920"
 NORMAL_WINDOW_MIN_SIZE = (1180, 760)
 COMPACT_WINDOW_SIZE = (680, 720)
@@ -69,6 +74,7 @@ OPERATION_LABELS = {
     "capture_batch": "캡처 정밀 OCR",
     "document": "문서 읽기",
     "analysis": "업무 분석",
+    "diagram": "업무 도식화",
 }
 OCR_REVIEW_MARKERS = ("⟦불확실", "⟦판독불가⟧")
 
@@ -93,6 +99,12 @@ class SsoklyApp(tk.Tk):
             app_data_dir=self.task_store.app_data_dir
         )
         loaded_window_settings = self.settings_store.load()
+        self.personal_todos = PersonalTodoStore(self.task_store.app_data_dir)
+        # Product defaults intentionally supersede older saved model selections.
+        self.ocr_engine_var = tk.StringVar(value="OpenAI 정밀 OCR")
+        self.analysis_model_var = tk.StringVar(value="gpt-5-nano")
+        self.ocr_model_var = tk.StringVar(value="gpt-5-nano")
+        self._analysis_metrics = {}
         self.compact_mode = False
         self.always_on_top = loaded_window_settings.always_on_top
         self.opacity_percent = loaded_window_settings.opacity_percent
@@ -512,6 +524,10 @@ class SsoklyApp(tk.Tk):
                     compact_mode=self.compact_mode,
                     always_on_top=self.always_on_top,
                     opacity_percent=self.opacity_percent,
+                    role="담당 미지정",
+                    ocr_engine=self.ocr_engine_var.get(),
+                    analysis_model=self.analysis_model_var.get(),
+                    ocr_model=self.ocr_model_var.get(),
                 )
             )
         except Exception as exc:
@@ -826,6 +842,11 @@ class SsoklyApp(tk.Tk):
         self.open_source_button.pack(side=tk.RIGHT)
 
     def _build_source_tab(self) -> None:
+        preferences = ttk.Frame(self.source_tab, style="Surface.TFrame")
+        preferences.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(preferences, text="담당자별 업무 자동 정리 · GPT-5 nano\n캡처·분석 시 OpenAI로 전송됩니다.",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        ttk.Button(preferences, text="내 할 일 보기", command=self.show_personal_todos).pack(anchor=tk.W, pady=(4, 0))
         ttk.Label(self.source_tab, text="인식된 원문", style="Section.TLabel").pack(anchor=tk.W)
         ttk.Label(
             self.source_tab,
@@ -841,29 +862,33 @@ class SsoklyApp(tk.Tk):
             bg=MINT_PANEL,
             fg=TEAL_DEEP,
             font=("Malgun Gothic", 10, "bold"),
-        ).pack(side=tk.LEFT, padx=(0, 12))
+        ).pack(anchor=tk.W, pady=(0, 6))
 
         self.template_buttons: list[tk.Button] = []
-        for label, output_mode in (
-            ("일정 확인표", "일정 확인표"),
-            ("업무 프로세스", "업무 프로세스"),
-            ("활용 안내 양식", "활용 안내 양식"),
-            ("통합 실행안", "통합 실행안"),
-        ):
+        button_grid = tk.Frame(template_panel, bg=MINT_PANEL)
+        button_grid.pack(fill=tk.X)
+        for column in range(2):
+            button_grid.columnconfigure(column, weight=1)
+        for index, (label, output_mode) in enumerate((
+            ("업무 일정·체크리스트", "업무 일정·체크리스트"),
+            ("교직원 메신저", "교직원 메신저"),
+            ("학부모 메신저", "학부모 메신저"),
+            ("가정통신문 초안", "가정통신문 초안"),
+        )):
             button = tk.Button(
-                template_panel,
+                button_grid,
                 text=label,
                 command=lambda mode=output_mode: self.analyze_text(mode),
-                bg="#ffffff" if output_mode != "통합 실행안" else CORAL,
-                fg=TEAL_DEEP if output_mode != "통합 실행안" else "#ffffff",
-                activebackground=MINT_TAB if output_mode != "통합 실행안" else CORAL_ACTIVE,
-                activeforeground=TEAL_DEEP if output_mode != "통합 실행안" else "#ffffff",
+                bg=CORAL if index == 0 else "#ffffff",
+                fg="#ffffff" if index == 0 else TEAL_DEEP,
+                activebackground=CORAL_ACTIVE if index == 0 else MINT_TAB,
+                activeforeground="#ffffff" if index == 0 else TEAL_DEEP,
                 relief=tk.FLAT,
                 font=("Malgun Gothic", 9, "bold"),
                 padx=12,
                 pady=7,
             )
-            button.pack(side=tk.LEFT, padx=(0, 7))
+            button.grid(row=index // 2, column=index % 2, sticky="ew", padx=3, pady=3)
             self.template_buttons.append(button)
 
         self.ocr_text = scrolledtext.ScrolledText(
@@ -880,6 +905,13 @@ class SsoklyApp(tk.Tk):
             insertbackground=TEAL_PRIMARY_ACTIVE,
         )
         self.ocr_text.pack(fill=tk.BOTH, expand=True)
+
+        review_tools = ttk.Frame(self.source_tab, style="Surface.TFrame")
+        review_tools.pack(fill=tk.X, pady=(6, 0))
+        ttk.Button(review_tools, text="표 보기", command=self.show_source_tables).pack(side=tk.LEFT)
+        ttk.Button(review_tools, text="원문 요약", command=lambda: self.analyze_text("원문 요약")).pack(side=tk.LEFT, padx=6)
+        ttk.Label(self.source_tab, text="청록색: 인식된 날짜 · 빨간 밑줄: 판독 불확실·잘못된 날짜 (원본 대조 필요)",
+                  style="Muted.TLabel", wraplength=520).pack(anchor=tk.W, pady=(4, 0))
 
         footer = ttk.Frame(self.source_tab, style="Surface.TFrame")
         footer.pack(fill=tk.X, pady=(14, 0))
@@ -944,6 +976,11 @@ class SsoklyApp(tk.Tk):
             command=self.copy_result,
         )
         self.copy_button.pack(side=tk.LEFT)
+        personal_bar = ttk.Frame(self.result_tab, style="Surface.TFrame")
+        personal_bar.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(personal_bar, text="내 할 일로 담기", command=self.choose_personal_todos).pack(side=tk.LEFT)
+        ttk.Button(personal_bar, text="내 할 일 보기", command=self.show_personal_todos).pack(side=tk.LEFT, padx=6)
+        ttk.Button(self.result_tab, text="실행안으로 업무 도식화 만들기", command=self.create_workflow_diagram).pack(anchor=tk.E, pady=(8, 0))
         self.partial_copy_buttons = [
             self.schedule_button,
             self.checklist_button,
@@ -964,6 +1001,160 @@ class SsoklyApp(tk.Tk):
             insertbackground=TEAL_PRIMARY_ACTIVE,
         )
         self.result_text.pack(fill=tk.BOTH, expand=True, pady=(14, 0))
+        self.result_text.tag_configure("heading", font=("Malgun Gothic", 13, "bold"), foreground=TEAL_PRIMARY_ACTIVE, spacing1=14, spacing3=7)
+        self.result_text.tag_configure("title", font=("Malgun Gothic", 16, "bold"), foreground=TEAL_DEEP, spacing3=10)
+        self.result_text.tag_configure("recommendation", foreground="#876035")
+        self.stream_preview = scrolledtext.ScrolledText(self.result_tab, height=9, wrap=tk.WORD,
+            font=("Malgun Gothic", 10), bg=MINT_PANEL, relief=tk.FLAT, state=tk.DISABLED)
+
+    def show_source_tables(self):
+        blocks = tabular_blocks(self.ocr_text.get("1.0", "end-1c"))
+        if not blocks:
+            messagebox.showinfo("표 인식 안내", "탭으로 구분된 표를 찾지 못했습니다. 표 전체를 선명하게 캡처해 다시 인식해 주세요. 병합 셀은 원본과 대조해야 합니다.")
+            return
+        window = tk.Toplevel(self)
+        window.title("인식된 표 · 원문은 변경되지 않습니다")
+        window.geometry("800x440")
+        window.transient(self)
+        ttk.Label(window, text="행·열을 유지합니다. ↳는 병합 셀에서 이어진 내용입니다. 행을 선택하면 전체 내용을 볼 수 있습니다.").pack(anchor=tk.W, padx=10, pady=8)
+        notebook = ttk.Notebook(window)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10)
+        for index, rows in enumerate(blocks, 1):
+            frame = ttk.Frame(notebook)
+            notebook.add(frame, text=f"표 {index}")
+            detail = scrolledtext.ScrolledText(frame, height=4, wrap=tk.WORD)
+            detail.pack(side=tk.BOTTOM, fill=tk.X)
+            detail.configure(state=tk.DISABLED)
+            columns = [str(i) for i in range(max(map(len, rows)))]
+            tree = ttk.Treeview(frame, columns=columns, show="headings")
+            table_font = tkfont.nametofont('TkDefaultFont')
+            for i in columns:
+                tree.heading(i, text=f"열 {int(i)+1}")
+                width = max((table_font.measure(row[int(i)]) + 24 for row in rows if int(i) < len(row)), default=150)
+                tree.column(i, width=max(100, min(620, width)), stretch=False)
+            vertical = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
+            horizontal = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=tree.xview)
+            tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+            vertical.pack(side=tk.RIGHT, fill=tk.Y)
+            horizontal.pack(side=tk.BOTTOM, fill=tk.X)
+            tree.pack(fill=tk.BOTH, expand=True)
+            tree.tag_configure("review", foreground="#b42318")
+            from services.source_review import review_spans
+            for row in rows:
+                tree.insert('', tk.END, values=row + [''] * (len(columns)-len(row)), tags=('review',) if review_spans('\t'.join(row)) else ())
+            def show_row(event, table=tree, text=detail):
+                if not table.selection():
+                    return
+                values = table.item(table.selection()[0], 'values')
+                text.configure(state=tk.NORMAL)
+                text.delete('1.0', tk.END)
+                text.insert('1.0', '\n'.join(f'열 {i+1}: {value}' for i, value in enumerate(values)))
+                text.configure(state=tk.DISABLED)
+            tree.bind('<<TreeviewSelect>>', show_row)
+        def copy():
+            rows = blocks[notebook.index(notebook.select())]
+            self.clipboard_clear()
+            self.clipboard_append('\n'.join('\t'.join(row) for row in rows))
+            self.status_var.set("표를 복사했습니다. 스프레드시트에 붙여넣을 수 있습니다.")
+        ttk.Button(window, text="선택한 표 복사", command=copy).pack(pady=8)
+
+    def _todo_window(self, title):
+        window = tk.Toplevel(self)
+        window.title(title)
+        window.geometry("720x520")
+        window.transient(self)
+        window.grab_set()
+        ttk.Label(window, text="항목을 클릭해 선택하세요. 아래에서 상세 내용과 원문을 확인할 수 있습니다.").pack(anchor=tk.W, padx=12, pady=8)
+        frame = ttk.Frame(window)
+        frame.pack(fill=tk.BOTH, expand=True, padx=12)
+        box = tk.Listbox(frame, selectmode=tk.MULTIPLE, exportselection=False)
+        bar = ttk.Scrollbar(frame, command=box.yview)
+        box.configure(yscrollcommand=bar.set)
+        bar.pack(side=tk.RIGHT, fill=tk.Y)
+        box.pack(fill=tk.BOTH, expand=True)
+        details = scrolledtext.ScrolledText(window, height=8, wrap=tk.WORD, state=tk.DISABLED)
+        details.pack(fill=tk.X, padx=12, pady=8)
+        def show(value):
+            details.configure(state=tk.NORMAL)
+            details.delete("1.0", tk.END)
+            details.insert("1.0", value)
+            details.configure(state=tk.DISABLED)
+        buttons = ttk.Frame(window)
+        buttons.pack(fill=tk.X, padx=12, pady=8)
+        ttk.Button(buttons, text="닫기", command=window.destroy).pack(side=tk.RIGHT)
+        return window, box, buttons, show
+
+    def choose_personal_todos(self):
+        if self._active_operation_id is not None:
+            messagebox.showinfo("처리 중", "분석이 끝난 뒤 항목을 선택해 주세요.")
+            return
+        items = checklist_items(self.result_text.get("1.0", "end-1c"))
+        if not items:
+            messagebox.showinfo("체크리스트 필요", "먼저 ‘업무 일정·체크리스트’를 만든 뒤 필요한 항목을 선택하세요.")
+            return
+        source = self.ocr_text.get("1.0", "end-1c").strip()
+        result = self.result_text.get("1.0", "end-1c").strip()
+        try:
+            matched = self.personal_todos.matches_analysis(result, source)
+        except Exception as exc:
+            messagebox.showerror("원문 연결 확인 실패", str(exc))
+            return
+        if not matched:
+            messagebox.showinfo("다시 분석 필요", "원문 또는 결과가 바뀌었거나 이전 버전의 결과입니다. 현재 원문으로 ‘업무 일정·체크리스트’를 다시 만든 뒤 담아 주세요.")
+            return
+        window, box, buttons, show = self._todo_window("내 할 일로 담기")
+        for item in items:
+            box.insert(tk.END, item.replace("\n", " · "))
+        box.bind("<<ListboxSelect>>", lambda event: show("\n\n".join(items[i] for i in box.curselection())))
+        def save():
+            selected = [items[i] for i in box.curselection()]
+            if not selected:
+                messagebox.showinfo("항목 선택", "담을 항목을 선택해 주세요.", parent=window)
+                return
+            try:
+                count = self.personal_todos.add(selected, source)
+            except Exception as exc:
+                messagebox.showerror("저장 실패", str(exc), parent=window)
+                return
+            self.status_var.set(f"내 할 일 {count}개 저장 · 이미 담은 항목은 중복 저장하지 않았습니다.")
+            window.destroy()
+        ttk.Button(buttons, text="선택한 항목 담기", command=save).pack(side=tk.LEFT)
+
+    def show_personal_todos(self):
+        window, box, buttons, show = self._todo_window("내 할 일 · 앱을 다시 열어도 유지됩니다")
+        rows = []
+        def refresh():
+            try:
+                rows[:] = self.personal_todos.list()
+            except Exception as exc:
+                messagebox.showerror("불러오기 실패", str(exc), parent=window)
+                return
+            box.delete(0, tk.END)
+            for row in rows:
+                box.insert(tk.END, ("[완료] " if row['done'] else "[할 일] ") + row['item'].replace("\n", " · "))
+            show("저장된 할 일이 없습니다." if not rows else "완료 처리하거나 다시 할 일로 되돌릴 항목을 선택하세요.")
+        def details(event):
+            show("\n\n".join(rows[i]['item'] + "\n\n담을 당시 원문:\n" + rows[i]['source'] for i in box.curselection()))
+        box.bind("<<ListboxSelect>>", details)
+        def change(done=None):
+            ids = [rows[i]['id'] for i in box.curselection()]
+            if not ids:
+                return
+            if done is None and not messagebox.askyesno("내 할 일 삭제", "선택한 내 할 일을 삭제할까요? 원문 업무는 유지되며 필요하면 다시 담을 수 있습니다.", parent=window):
+                return
+            try:
+                if done is None:
+                    self.personal_todos.delete(ids)
+                else:
+                    self.personal_todos.set_done(ids, done)
+            except Exception as exc:
+                messagebox.showerror("변경 실패", str(exc), parent=window)
+                return
+            refresh()
+        ttk.Button(buttons, text="완료", command=lambda: change(True)).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="다시 할 일로", command=lambda: change(False)).pack(side=tk.LEFT, padx=6)
+        ttk.Button(buttons, text="삭제", command=change).pack(side=tk.LEFT)
+        refresh()
 
     def capture_area(self) -> None:
         if self._active_operation_id is not None:
@@ -1159,18 +1350,21 @@ class SsoklyApp(tk.Tk):
         capture_id: Optional[str] = None,
         apply_mode: str = "replace",
     ) -> None:
-        self.status_var.set("OpenAI 정밀 OCR로 원문을 읽는 중입니다...")
+        local = self.ocr_engine_var.get() == "Windows 기본 OCR" and apply_mode == "replace"
+        selected_model = self.ocr_model_var.get()
+        self.status_var.set("Windows 기본 OCR로 읽는 중입니다..." if local else "OpenAI 정밀 OCR로 읽는 중입니다...")
         self._start_worker_operation(
             "ocr",
-            lambda: extract_text_from_image(
+            lambda: extract_local_text(image) if local else extract_text_from_image(
                 image,
                 raise_errors=True,
                 detail="high",
+                model_override=selected_model,
             ),
             {
                 "capture_id": capture_id,
                 "apply_mode": apply_mode,
-                "ocr_profile": "high-exact-v1",
+                "ocr_profile": "windows-ko-v1" if local else f"{selected_model}/high-table-v2",
             },
         )
 
@@ -1329,21 +1523,86 @@ class SsoklyApp(tk.Tk):
             return
 
         self.status_var.set(f"{output_mode}을 만드는 중입니다...")
+        model = self.analysis_model_var.get()
+        context = self.current_context_id
+        revisions = (self._source_revision, self._result_revision)
+        cancel_event = threading.Event()
+        self._analysis_metrics = {}
+        metadata = {"output_mode": output_mode}
+        self.notebook.select(self.result_tab)
+        self.stream_preview.pack(fill=tk.X, before=self.result_text, pady=(8, 0))
+        self._set_stream_preview("원문에서 할 일과 근거를 추출하고 있습니다...")
+        def preview(value):
+            self._worker_results.put((cancel_event, context, "analysis_preview", True, value, {"revisions": revisions}))
         self._start_worker_operation(
             "analysis",
             lambda: analyze_document_task(
                 text,
                 output_mode,
                 raise_errors=True,
+                model=model, on_preview=preview, cancel_event=cancel_event,
+                cache_dir=self.task_store.app_data_dir,
+                on_metrics=lambda metrics: metadata.update(metrics=metrics),
             ),
-            {"output_mode": output_mode},
+            metadata,
+            cancel_event=cancel_event,
         )
 
+    def _set_stream_preview(self, value):
+        self.stream_preview.configure(state=tk.NORMAL)
+        self.stream_preview.delete("1.0", tk.END)
+        self.stream_preview.insert("1.0", value)
+        self.stream_preview.configure(state=tk.DISABLED)
+
+    def create_workflow_diagram(self):
+        if self._active_operation_id is not None:
+            messagebox.showinfo("처리 중", "현재 처리가 끝난 뒤 도식화를 만들어 주세요.")
+            return
+        text = self.result_text.get("1.0", "end-1c").strip()
+        if not text:
+            messagebox.showinfo("실행안 필요", "원문을 분석한 뒤 실행안을 확인해 주세요.")
+            return
+        if not messagebox.askyesno("업무 도식화", "현재 실행안 텍스트를 OpenAI 이미지 API로 보내 업무 흐름도를 만듭니다.\n별도 이미지 생성 비용이 발생합니다. 날짜와 내용을 확인했나요?"):
+            return
+        self._start_worker_operation("diagram", lambda: generate_workflow_image(text))
+
+    def _show_workflow_diagram(self, data):
+        window = tk.Toplevel(self)
+        window.title("업무 도식화 · AI 이미지 검수")
+        window.geometry("1000x760")
+        ttk.Label(window, text="날짜·이름·화살표 관계를 실행안과 대조한 후 저장하세요.").pack(pady=8)
+        image = Image.open(BytesIO(data))
+        image.thumbnail((940, 640))
+        photo = ImageTk.PhotoImage(image)
+        label = ttk.Label(window, image=photo)
+        label.image = photo
+        label.pack(fill=tk.BOTH, expand=True)
+        def save():
+            path = filedialog.asksaveasfilename(parent=window, defaultextension=".png", filetypes=[("PNG 이미지", "*.png")], initialfile="업무도식화.png")
+            if path:
+                try:
+                    Path(path).write_bytes(data)
+                except OSError as exc:
+                    messagebox.showerror("이미지 저장 실패", str(exc), parent=window)
+        ttk.Button(window, text="PNG로 저장", command=save).pack(pady=8)
+
     def _finish_analysis(self, result: str, output_mode: str) -> None:
+        # Persist source/result provenance so stale results remain blocked after restart.
+        origin_saved = True
+        try:
+            self.personal_todos.remember_analysis(result, self.ocr_text.get("1.0", "end-1c"))
+        except Exception:
+            origin_saved = False
+        self.stream_preview.pack_forget()
         self.current_output_mode = output_mode
         self._replace_result_text(result, track_change=True)
         self.notebook.select(self.result_tab)
         self.status_var.set("업무 실행안이 완성되었습니다. 필요한 항목을 바로 복사할 수 있습니다.")
+        if self._analysis_metrics:
+            m = self._analysis_metrics
+            self.status_var.set(f"{output_mode} 완료 · {m['seconds']}초 · {m['model']}" + (" · 저장된 사실 재사용" if m['cached'] else " · 원문 근거를 확인해 주세요"))
+        if not origin_saved:
+            self.status_var.set("분석은 완료됐지만 원문 연결 저장에 실패했습니다. 내 할 일 담기 전 저장 공간을 확인하고 다시 분석해 주세요.")
 
     def _start_worker_operation(
         self,
@@ -1413,7 +1672,8 @@ class SsoklyApp(tk.Tk):
             default=messagebox.NO,
         ):
             return
-        profile = "high-exact-v1"
+        selected_model = self.ocr_model_var.get()
+        profile = f"{selected_model}/high-table-v2"
         cancel_event = threading.Event()
 
         def read_each_original() -> list[dict[str, Any]]:
@@ -1428,6 +1688,7 @@ class SsoklyApp(tk.Tk):
                         image,
                         detail="high",
                         raise_errors=True,
+                        model_override=selected_model,
                     )
                     results.append(
                         {
@@ -1589,6 +1850,13 @@ class SsoklyApp(tk.Tk):
                     payload,
                     metadata,
                 ) = result
+                if kind == "analysis_preview":
+                    if (operation_id is self._active_operation_cancel_event
+                        and context_id == self.current_context_id
+                        and metadata["revisions"] == (self._source_revision, self._result_revision)
+                        and not self._hold_active_operation_results):
+                        self._set_stream_preview(payload)
+                    continue
                 is_current_operation = (
                     operation_id == self._active_operation_id
                     and context_id == self.current_context_id
@@ -1599,6 +1867,10 @@ class SsoklyApp(tk.Tk):
                     continue
                 if not is_current_operation:
                     continue
+
+                if kind == "analysis":
+                    self.stream_preview.pack_forget()
+                    self._analysis_metrics = metadata.get("metrics", {})
 
                 operation_revisions = self._active_operation_revisions
                 self._active_operation_id = None
@@ -1619,7 +1891,9 @@ class SsoklyApp(tk.Tk):
                         self._refresh_recent_captures()
                         if storage_error:
                             payload = f"{payload}\n\n캡처함 기록 오류: {storage_error}"
-                    if kind == "analysis":
+                    if kind == "diagram":
+                        title = "업무 도식화 오류"
+                    elif kind == "analysis":
                         title = "업무 분석 오류"
                     elif kind == "document":
                         title = "첨부 문서 읽기 오류"
@@ -1661,7 +1935,7 @@ class SsoklyApp(tk.Tk):
                     operation_revisions is not None
                     and operation_revisions[1] != self._result_revision
                 )
-                if source_changed or (kind == "analysis" and result_changed):
+                if source_changed or (kind in ("analysis", "diagram") and result_changed):
                     self.status_var.set(
                         "처리 중 원문이나 실행안이 수정되어 도착한 결과를 적용하지 않았습니다."
                     )
@@ -1672,7 +1946,10 @@ class SsoklyApp(tk.Tk):
                     )
                     continue
 
-                if kind == "document":
+                if kind == "diagram":
+                    self._show_workflow_diagram(payload)
+                    self.status_var.set("업무 도식화를 만들었습니다. 이미지 내용을 검수한 뒤 저장하세요.")
+                elif kind == "document":
                     self._finish_document_extraction(payload, metadata.get("filename", "첨부 파일"))
                 elif kind == "analysis":
                     self._finish_analysis(
@@ -2205,6 +2482,7 @@ class SsoklyApp(tk.Tk):
         )
         raw_text.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 10))
         raw_text.insert("1.0", record.ocr_text)
+        highlight_source(raw_text)
         raw_text.configure(state=tk.DISABLED)
         self.capture_review_raw_text = raw_text
 
@@ -2233,6 +2511,7 @@ class SsoklyApp(tk.Tk):
         )
         review_text.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
         review_text.insert("1.0", record.effective_text)
+        highlight_source(review_text)
         review_text.edit_modified(False)
         review_text.bind("<<Modified>>", self._on_capture_review_modified)
         self.capture_review_text = review_text
@@ -2309,6 +2588,7 @@ class SsoklyApp(tk.Tk):
         if not isinstance(editor, tk.Text) or not editor.edit_modified():
             return
         editor.edit_modified(False)
+        highlight_source(editor)
         self.capture_review_dirty = (
             editor.get("1.0", "end-1c") != self.capture_review_initial_text
         )
@@ -3085,6 +3365,7 @@ class SsoklyApp(tk.Tk):
         if not self._suspend_change_tracking:
             if widget is self.ocr_text:
                 self._source_revision += 1
+                highlight_source(widget)
             elif widget is self.result_text:
                 self._result_revision += 1
             self._mark_workspace_dirty()
@@ -3380,6 +3661,7 @@ class SsoklyApp(tk.Tk):
         self._held_worker_results.clear()
 
     def _invalidate_active_operation(self) -> None:
+        self.stream_preview.pack_forget()
         if self._active_operation_cancel_event is not None:
             self._active_operation_cancel_event.set()
         self._active_operation_id = None
@@ -3807,9 +4089,14 @@ class SsoklyApp(tk.Tk):
 
     def _replace_ocr_text(self, text: str, track_change: bool = False) -> None:
         self._replace_text_widget(self.ocr_text, text, track_change)
+        highlight_source(self.ocr_text)
 
     def _replace_result_text(self, text: str, track_change: bool = False) -> None:
         self._replace_text_widget(self.result_text, text, track_change)
+        for i, line in enumerate(text.splitlines(), 1):
+            tag = "heading" if line.startswith("## ") else "title" if line.startswith("# ") else "recommendation" if "[추천 실행]" in line else None
+            if tag:
+                self.result_text.tag_add(tag, f"{i}.0", f"{i}.end")
 
     def _replace_text_widget(
         self,

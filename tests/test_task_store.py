@@ -1,4 +1,5 @@
 from datetime import timezone
+from contextlib import closing
 import os
 from pathlib import Path
 import shutil
@@ -24,7 +25,7 @@ class TaskStoreTestCase(unittest.TestCase):
         )
 
     def test_initializes_schema_version_one_and_creates_full_record(self) -> None:
-        with sqlite3.connect(self.db_path) as connection:
+        with closing(sqlite3.connect(self.db_path)) as connection, connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         self.assertEqual(version, 1)
 
@@ -157,7 +158,7 @@ class TaskStoreTestCase(unittest.TestCase):
         self.assertEqual(owned_capture.read_bytes(), temporary_capture.read_bytes())
         self.assertEqual(owned_capture.parent, self.store.captures_dir)
         self.assertNotEqual(owned_capture, temporary_capture)
-        with sqlite3.connect(self.db_path) as connection:
+        with closing(sqlite3.connect(self.db_path)) as connection, connection:
             stored_capture_path = connection.execute(
                 "SELECT capture_path FROM tasks WHERE id = ?",
                 (record.id,),
@@ -203,7 +204,7 @@ class TaskStoreTestCase(unittest.TestCase):
     def test_rejects_incompatible_unversioned_schema_without_promoting_it(self) -> None:
         legacy_db = self.root / "legacy" / "ssokly.db"
         legacy_db.parent.mkdir()
-        with sqlite3.connect(legacy_db) as connection:
+        with closing(sqlite3.connect(legacy_db)) as connection, connection:
             connection.execute(
                 "CREATE TABLE tasks (id TEXT, status TEXT, updated_at TEXT)"
             )
@@ -211,7 +212,7 @@ class TaskStoreTestCase(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "incompatible"):
             TaskStore(db_path=legacy_db, app_data_dir=legacy_db.parent)
 
-        with sqlite3.connect(legacy_db) as connection:
+        with closing(sqlite3.connect(legacy_db)) as connection, connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         self.assertEqual(version, 0)
 
