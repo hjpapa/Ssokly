@@ -6,6 +6,15 @@
 
 ## 단계별 후속 검증 — 2026-09-17
 
+### 캡처 중심 재구성 2단계: 독립 화면·처리 연결
+
+- `.venv\Scripts\python.exe -m unittest tests.test_capture_desk tests.test_capture_desk_flow tests.test_legacy_reader tests.test_text_actions tests.test_desk_transfer -q`: **75개 통과, 7.062초**. 자동 인식 미동의/보관만/가림 복원, 실제 mock 전달 픽셀, 파일 사본 종류, 요청 전 정책 변경 거부, 추가 카드 분석 호출 없음, 늦은 응답·빈 수정본·재OCR·종료/이동 전 저장 실패·재시작/복사를 검사.
+- 복구 초기 6개 통과(1.024초) 이후 제목 충돌·외부 제목 보존·다른 페이지 OCR 완료 뒤 최신값 표시 3개를 추가. `.venv\Scripts\python.exe -m unittest tests.test_capture_desk_recovery -q`: **9개 통과, 1.579초**. 휴지통 캡처 복원·문서 읽기 전용·이전 결과 최신값·충돌 복구 승인/취소/읽기 실패 입력 보존 포함.
+- 최종 위 75개 명령에 `tests.test_capture_desk_recovery`를 추가한 6개 suite: **84개 통과, 8.596초**, 실패/오류/건너뜀 없음. 중간 결과를 합산한 것이 아니라 최종 코드로 함께 재실행한 결과.
+- Tk 실제 geometry 720×600 / 1280×800에서 핵심 버튼·편집창 접근, 보관함 접기와 원본/텍스트 전환을 위젯 좌표로 검사. 네이티브 마우스/화면 육안·고배율 시험은 아니다. 클립보드는 mock이며 사용자 클립보드를 변경하지 않는다.
+- 초기 실패: 좁은 창의 footer 가림, 취소된 대기 worker 및 thread 시작 실패의 busy 상태, 휴지통 복원·이력 선택의 stale snapshot을 수정. 테스트의 레거시 사본 추가 시 DB 전체 바이트 불변 기대는 기존 record 불변으로 정정(새 compatibility Task 추가는 의도된 동작); 요청 gate 자체를 mock으로 우회하던 시험은 실제 dispatch gate로 변경. 최종 집중 결과와 초기 실패를 구분한다.
+- `compileall -q services ui tests tools`, `git diff --check` 통과. 이 단계에서 전체 기존 앱 회귀나 실제 API 품질을 재실행한 것은 아니다. 기본 진입점/기존 저장 실패 복구/오프라인 gate는 다음 단계에서 검증.
+
 ### 캡처 중심 재구성 1단계: 기반 검증
 
 - 최종 `.venv\Scripts\python.exe -m unittest tests.test_document_library tests.test_desk_widgets -q`: **38개 통과, 2.147초**. 저장 계층 신규 28개와 이미지/인라인 표/썸네일 위젯 신규 10개. 기본 진입점은 아직 변경하지 않았으며 전체 앱 시험 결과로 해석하지 않음.
