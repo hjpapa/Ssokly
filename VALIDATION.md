@@ -8,6 +8,7 @@
 
 - V2 기준점 커밋 전 `.venv\Scripts\python.exe -m unittest discover -s tests -q` 재실행: **261개 통과, 25.883초**, 건너뜀 없음. 합성/mock, 실제 API 호출 없음.
 - Git fetch 후 기준 HEAD와 `origin/main` 차이 0/0. 변경 대상의 키/토큰/개인키 패턴 검사에서 일치 없음. LF/CRLF 안내와 기존 Pillow 경고는 기능 실패가 아님.
+- 전송 범위 보완: `.venv\Scripts\python.exe -m unittest tests.test_transfer_policy tests.test_v2_transfer_integration tests.test_v2_app_flow -q` **55개 통과, 3.988초**. 글자/낱말 재조합 거부, 가림 편집 재선택, 유사 식별자 오탐, 중간 수동 편집, 추가 가림 보호값 유지, mock 분석 요청에서 제외/유지값 확인. 실제 API 없음.
 - 후속 결함 점검과 개선의 시험 결과는 아래 이력을 덮지 않고 이 절에 추가합니다.
 
 ## V2 1차 — 2026-09-17 (현재 작업 트리)

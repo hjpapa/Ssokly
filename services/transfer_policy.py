@@ -35,6 +35,64 @@ def _fingerprint(value: str) -> tuple[int, str]:
     return len(normalized), sha256(normalized.encode("utf-8")).hexdigest()
 
 
+_EDIT_TOKEN = re.compile(r"\[[^\]\r\n]+\]|\w+(?:[-.@+]\w+)*|\s+|[^\w\s]", re.UNICODE)
+_MASK_TOKEN = re.compile(r"\[가림\d*\]")
+
+
+def removed_text_fragments(original: str, edited: str) -> list[str]:
+    """Compare whole edit tokens, never a mask number with an ID suffix.
+
+    Names, identifiers, phone/email tokens and bracketed replacements are
+    atomic. A selected redaction is recorded separately by TextRedactionDraft;
+    this function handles free typing before/between/after those selections.
+    """
+    before, after = _EDIT_TOKEN.findall(original), _EDIT_TOKEN.findall(edited)
+    matcher = SequenceMatcher(None, before, after, autojunk=False)
+    return ["".join(before[start:end]).strip()
+            for operation, start, end, _, _ in matcher.get_opcodes()
+            if operation in {"replace", "delete"} and "".join(before[start:end]).strip()]
+
+
+def is_scope_reduction(approved: str, selected: str) -> bool:
+    """UI-only comparison: retained excerpts stay ordered around mask tokens.
+
+    Not a grant to send a changed source without confirmation. Network guards
+    accept only a continuous excerpt; a changed editor must be selected again.
+    """
+    approved = _normalized(approved)
+    selected = _normalized(selected)
+    if not selected:
+        return True
+    if not approved:
+        return False
+    if not _MASK_TOKEN.search(selected):
+        return selected in approved
+    position = 0
+    for retained in _MASK_TOKEN.split(selected):
+        if not retained:
+            continue
+        index = approved.find(retained, position)
+        if index < 0:
+            return False
+        position = index + len(retained)
+    return True
+
+
+class TextRedactionDraft:
+    """Local editor bookkeeping; never itself used as an outbound payload."""
+    def __init__(self, text: str):
+        self.baseline = text
+        self.excluded: list[str] = []
+
+    def record_selection(self, before: str, after: str, removed: str) -> None:
+        self.excluded.extend(removed_text_fragments(self.baseline, before))
+        self.excluded.append(removed)
+        self.baseline = after
+
+    def snapshot(self, text: str) -> "TransferSnapshot":
+        return make_text_snapshot(text, original_text=self.baseline, excluded_strings=self.excluded)
+
+
 @dataclass(frozen=True)
 class TransferPolicy:
     scope_id: str
@@ -64,10 +122,9 @@ class TransferPolicy:
             strict = self.redacted
         if strict and normalized:
             approved = _normalized(self.approved_text)
-            # Reordered excerpts are allowed. Newly entered values are not
-            # silently treated as part of the approved image/text copy.
-            values = re.findall(r"[\w@.+:/-]+", re.sub(r"\[가림\d+\]", "", text), re.UNICODE)
-            if not approved or any(_normalized(value) not in approved for value in values):
+            # A continuous excerpt (ignoring whitespace) is allowed; combining
+            # letters/words from unrelated positions creates unapproved data.
+            if not approved or normalized not in approved:
                 raise ScopeExpansionRequired("가린 사본에 없던 내용이 추가되었습니다. 전송 범위를 다시 선택해 주세요.")
         return text
 
@@ -182,9 +239,7 @@ def make_text_snapshot(text: str, *, original_text: str | None = None,
     """Create an outbound string, protecting removed/replaced original spans."""
     excluded = list(excluded_strings)
     if original_text is not None and original_text != text:
-        matcher = SequenceMatcher(None, original_text, text, autojunk=False)
-        excluded.extend(original_text[a:b] for op, a, b, _, _ in matcher.get_opcodes()
-                        if op in {"replace", "delete"})
+        excluded.extend(removed_text_fragments(original_text, text))
     protected = set(previous.protected if previous else ())
     for item in excluded:
         if _normalized(item):

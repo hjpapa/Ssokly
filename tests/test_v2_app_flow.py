@@ -193,6 +193,20 @@ class V2AppFlowTests(unittest.TestCase):
             self.assertIsNone(self.app._select_transfer(kind='text', text='SECRET old text'))
             choose.assert_called_once()
 
+    def test_changed_redacted_text_always_reselects_scope_even_for_known_tokens(self):
+        safe = 'SCHOOL EDUCATION CREATIVE RESEARCH EVALUATION TEACHER'
+        snapshot = make_image_snapshot(Image.new('RGB', (20, 20)), rectangles=[(0, 0, 10, 10)])
+        policy = snapshot.policy.with_safe_text(safe)
+        self.app.transfer_policies.save('document:' + self.app.document_id, policy)
+        from services.workspace_state import text_fingerprint
+        self.app.workspace_state.update(self.app.document_id,
+            approved_source_hash=text_fingerprint(safe), approved_source_scope=policy.scope_id)
+        with patch('ui.app.choose_transfer', return_value=None) as choose, patch.object(self.app, '_start_worker_operation') as start:
+            self.app._replace_ocr_text('S E C R E T', track_change=True)
+            self.app.analyze_text(force=True)
+            choose.assert_called_once()
+            start.assert_not_called()
+
     def test_R02_artifact_save_failure_preserves_visible_manual_edits(self):
         self.finish_request(self.prepare_request())
         self.app._replace_result_text('교사가 직접 고친 안내문', track_change=True)

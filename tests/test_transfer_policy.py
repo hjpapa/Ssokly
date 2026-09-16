@@ -13,9 +13,9 @@ from unittest.mock import Mock, patch
 from PIL import Image
 
 from services.transfer_policy import (
-    ScopeExpansionRequired, TransferPolicy, TransferPolicyStore, TransferSnapshot,
+    ScopeExpansionRequired, TextRedactionDraft, TransferPolicy, TransferPolicyStore, TransferSnapshot,
     make_file_snapshot, make_image_snapshot, make_text_snapshot, redact_text,
-    restore_image_snapshot, risk_candidates,
+    restore_image_snapshot, risk_candidates, is_scope_reduction,
 )
 
 
@@ -217,7 +217,82 @@ class TransferPolicyTests(unittest.TestCase):
 
     def test_new_mask_tokens_do_not_count_as_scope_expansion(self):
         snapshot = make_text_snapshot("담당 [가림1] / 날짜 2026-10-15", excluded_strings=["합성학생"])
-        snapshot.guard_text("담당 [가림1] / 날짜 [가림2]")
+        self.assertTrue(is_scope_reduction(snapshot.text, "담당 [가림1] / 날짜 [가림2]"))
+        # It is a reduction in the editor, not a silent grant for a new request.
+        with self.assertRaises(ScopeExpansionRequired):
+            snapshot.guard_text("담당 [가림1] / 날짜 [가림2]")
+
+    def test_image_policy_rejects_word_and_letter_recombination(self):
+        snapshot = make_image_snapshot(Image.new("RGB", (10, 10), "white"), rectangles=[(1, 1, 5, 5)])
+        policy = snapshot.policy.with_safe_text("SCHOOL EDUCATION CREATIVE RESEARCH EVALUATION TEACHER")
+        for restored in ("S E C R E T", "TEACHER SCHOOL", "SCHOOL RESEARCH", "SECRET"):
+            with self.subTest(restored=restored), self.assertRaises(ScopeExpansionRequired):
+                policy.guard_text(restored)
+        policy.guard_text("CREATIVE RESEARCH")
+        policy.guard_text("CREATIVE\nRESEARCH")
+
+    def test_reduction_comparison_does_not_allow_reordered_excerpts(self):
+        self.assertTrue(is_scope_reduction("first middle last", "first [가림1] last"))
+        self.assertFalse(is_scope_reduction("first middle last", "last [가림1] first"))
+        self.assertFalse(is_scope_reduction("SCHOOL EDUCATION CREATIVE RESEARCH EVALUATION TEACHER", "S E C R E T"))
+
+    def test_similar_ids_and_mask_numbers_do_not_trigger_false_positive(self):
+        cases = [
+            ("학생 A001, 학생 A002", "학생 [가림1], 학생 A002", "A001"),
+            ("연락 010-1111-1234 / 업무 010-9999-1234", "연락 [가림1] / 업무 010-9999-1234", "010-1111-1234"),
+            ("이름 김가상 / 김 담당자", "이름 [가림1] / 김 담당자", "김가상"),
+        ]
+        for original, safe, removed in cases:
+            with self.subTest(removed=removed):
+                snapshot = make_text_snapshot(safe, original_text=original, excluded_strings=[removed])
+                self.assertEqual(snapshot.text, safe)
+                with self.assertRaises(ScopeExpansionRequired):
+                    snapshot.guard_text(removed, strict=False)
+
+    def test_manual_edits_and_explicit_selections_are_tracked_separately(self):
+        raw = "학생 A001 / 학생 A002 / 비밀 TOKEN_A"
+        draft = TextRedactionDraft(raw)
+        # The user manually edits the last value before clicking selection-mask.
+        before = "학생 A001 / 학생 A002 / 비밀 [가림2]"
+        after = "학생 [가림1] / 학생 A002 / 비밀 [가림2]"
+        draft.record_selection(before, after, "A001")
+        final = "학생 [가림1] / 학생 [가림3] / 비밀 [가림2]"
+        snapshot = draft.snapshot(final)
+        for secret in ("A001", "A002", "TOKEN_A"):
+            with self.subTest(secret=secret), self.assertRaises(ScopeExpansionRequired):
+                snapshot.guard_text(secret, strict=False)
+        self.assertEqual(snapshot.text, final)
+
+    def test_explicit_selection_is_not_reinterpreted_as_partial_identifier_diff(self):
+        raw = "학생 A001, 학생 A002"
+        safe = "학생 [가림1], 학생 A002"
+        draft = TextRedactionDraft(raw)
+        draft.record_selection(raw, safe, "A001")
+        snapshot = draft.snapshot(safe)
+        snapshot.guard_text("A002", strict=False)
+        with self.assertRaises(ScopeExpansionRequired):
+            snapshot.guard_text("A001", strict=False)
+
+    def test_further_redaction_preserves_prior_protected_values(self):
+        from ui.transfer_dialog import TransferDialog
+        original = "담당 [가림1] / 기한 2026-10-15"
+        safe = "담당 [가림1] / 기한 [가림2]"
+        dialog = TransferDialog.__new__(TransferDialog)
+        dialog.window = Mock()
+        dialog.kind, dialog.masking = "text", True
+        dialog.original_image = None
+        dialog.original_text = original
+        dialog.previous = make_text_snapshot(original, excluded_strings=["SYNTHETIC_OLD_SECRET"]).policy
+        dialog.text_draft = TextRedactionDraft(original)
+        dialog.editor = Mock()
+        dialog.editor.get.return_value = safe
+        dialog.result = None
+        with patch("ui.transfer_dialog.messagebox.askyesno") as confirm:
+            dialog.accept_redacted()
+        confirm.assert_not_called()
+        self.assertIsNotNone(dialog.result)
+        with self.assertRaises(ScopeExpansionRequired):
+            dialog.result.guard_text("SYNTHETIC_OLD_SECRET", strict=False)
 
     def test_redacted_dialog_detects_restored_text_and_reduced_pixel_masks(self):
         from ui.transfer_dialog import TransferDialog

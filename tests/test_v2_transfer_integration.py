@@ -14,7 +14,7 @@ from services.ai_service import analyze_document_task
 from services.diagram_service import generate_workflow_image
 from services.ocr_service import extract_text_from_file
 from services.source_contract import SourceAction, SourceDocument, SourceRef, FieldRefs
-from services.transfer_policy import ScopeExpansionRequired, make_file_snapshot, make_text_snapshot
+from services.transfer_policy import ScopeExpansionRequired, make_file_snapshot, make_image_snapshot, make_text_snapshot
 
 
 SECRET = "SYNTHETIC_PRIVATE_TOKEN_63891"
@@ -134,6 +134,27 @@ class V2TransferBoundaryTests(unittest.TestCase):
         snapshot = make_text_snapshot(SAFE, original_text=ORIGINAL)
         self.assertNotEqual(AnalysisCache.key(snapshot.text, "전체 담당자", "gpt-5-nano"),
                             AnalysisCache.key(ORIGINAL, "전체 담당자", "gpt-5-nano"))
+
+    def test_p05_recombined_image_ocr_letters_do_not_reach_any_api(self):
+        snapshot = make_image_snapshot(Image.new("RGB", (10, 10), "white"), rectangles=[(1, 1, 5, 5)])
+        snapshot = snapshot.with_safe_text("SCHOOL EDUCATION CREATIVE RESEARCH EVALUATION TEACHER")
+        for send in (lambda value: analyze_document_task(value, raise_errors=True), generate_workflow_image):
+            with self.subTest(send=send), patch("openai.OpenAI") as client:
+                with self.assertRaises(ScopeExpansionRequired):
+                    send(snapshot.guard_text("S E C R E T"))
+                client.assert_not_called()
+
+    def test_p04_one_id_redacted_does_not_hide_other_id_or_send_original(self):
+        raw = "학교는 참가 신청서를 제출한다.\n학생 A001, 학생 A002"
+        safe = "학교는 참가 신청서를 제출한다.\n학생 [가림1], 학생 A002"
+        snapshot = make_text_snapshot(safe, original_text=raw, excluded_strings=["A001"])
+        client = client_with_document(parent=True)
+        with patch("openai.OpenAI", return_value=client), patch("services.ai_service.load_dotenv"), patch.dict("os.environ", {"OPENAI_API_KEY": "synthetic-only"}):
+            analyze_document_task(snapshot.guard_text(snapshot.text), "학부모 메신저", raise_errors=True)
+        payload = client.responses.stream.call_args.kwargs["input"]
+        self.assertNotIn("A001", payload)
+        self.assertIn("A002", payload)
+        self.assertIn("[가림1]", payload)
 
 
 if __name__ == "__main__":

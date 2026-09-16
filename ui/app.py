@@ -1585,7 +1585,7 @@ class SsoklyApp(tk.Tk):
                     and state.get('approved_source_scope') == previous.scope_id):
                     # Reuse the immutable redacted text, not the original still in the editor.
                     snapshot = make_text_snapshot(previous.approved_text, previous=previous)
-                else:
+                elif not previous.redacted:
                     try:
                         previous.guard_text(text)
                         if not risk_candidates(text) or text == previous.approved_text:

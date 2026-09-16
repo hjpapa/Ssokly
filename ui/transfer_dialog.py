@@ -7,7 +7,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 
 from services.transfer_policy import (
-    ScopeExpansionRequired, TransferPolicy, TransferSnapshot, make_file_snapshot, make_image_snapshot,
+    ScopeExpansionRequired, TextRedactionDraft, TransferPolicy, TransferSnapshot, is_scope_reduction, make_file_snapshot, make_image_snapshot,
     make_text_snapshot, restore_image_snapshot, risk_candidates,
 )
 
@@ -33,6 +33,7 @@ class TransferDialog:
         self.parent, self.kind, self.original_text = parent, kind, text
         self.path, self.previous = Path(path) if path is not None else None, previous
         self.original_image = image
+        self.text_draft = TextRedactionDraft(text if kind == "text" else "")
         self.result = None
         self.rectangles, self.excluded = [], []
         self.masking = False
@@ -173,6 +174,7 @@ class TransferDialog:
         try:
             start, end = self.editor.index("sel.first"), self.editor.index("sel.last")
             secret = self.editor.get(start, end)
+            before = self.editor.get("1.0", "end-1c")
         except tk.TclError:
             self.note.set("가릴 텍스트를 먼저 선택해 주세요.")
             return
@@ -180,6 +182,7 @@ class TransferDialog:
         self._serial += 1
         self.editor.delete(start, end)
         self.editor.insert(start, f"[가림{self._serial}]")
+        self.text_draft.record_selection(before, self.editor.get("1.0", "end-1c"), secret)
 
     def select_page_image(self):
         path = filedialog.askopenfilename(parent=self.window, title="가릴 페이지 이미지 선택",
@@ -264,18 +267,24 @@ class TransferDialog:
                     raise ValueError("전송할 텍스트 사본을 입력해 주세요.")
                 if self.kind == "text" and safe == self.original_text:
                     raise ValueError("가릴 내용을 선택하거나 사본을 수정해 주세요.")
-                selected = make_text_snapshot(safe, original_text=self.original_text,
-                                              excluded_strings=self.excluded)
+                selected = self.text_draft.snapshot(safe)
                 if self.kind == "file" and not selected.policy.redacted:
                     # User-selected text instead of the file is still a
                     # restricted scope even when no characters were removed.
                     from dataclasses import replace
                     selected = replace(selected, policy=replace(selected.policy, redacted=True))
-            if self._expands_previous(selected):
+            expands = self._expands_previous(selected)
+            if expands:
                 if not messagebox.askyesno("이전 가림 범위 변경 확인",
                                            "새 사본에 이전에 가렸거나 승인 사본에 없던 내용이 포함될 수 있습니다. 일부를 새로 가렸어도 이전 가림 해제는 별도 범위 확대입니다.\n\n현재 미리보기의 범위로 새로 승인하시겠습니까?",
                                            parent=self.window, default="no"):
                     return
+            elif selected.kind == "text" and self.previous is not None and self.previous.redacted:
+                # A further reduction must retain earlier exclusions. Only an
+                # explicitly confirmed expansion may establish a wider scope.
+                from dataclasses import replace
+                selected = replace(selected, policy=replace(selected.policy,
+                    redacted=True, protected=tuple(sorted(set(selected.policy.protected) | set(self.previous.protected)))))
             self.result = selected
         except ValueError as exc:
             messagebox.showerror("가림 확인", str(exc), parent=self.window)
@@ -291,8 +300,8 @@ class TransferDialog:
             return False
         if selected.kind == "text":
             try:
-                previous.guard_text(selected.text)
-                return False
+                previous.guard_text(selected.text, strict=False)
+                return not is_scope_reduction(previous.approved_text, selected.text)
             except ScopeExpansionRequired:
                 return True
         if selected.kind == "image":
