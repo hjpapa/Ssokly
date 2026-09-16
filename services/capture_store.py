@@ -14,6 +14,8 @@ from uuid import UUID, uuid4, uuid5
 
 from PIL import Image
 
+from services.capture_paths import owned_capture_path
+
 
 MAX_STORED_CAPTURES = 8
 PNG_CAPTURE_COMPRESS_LEVEL = 3
@@ -307,6 +309,13 @@ class CaptureStore:
             row = self._select_capture_row(connection, normalized_id)
             return self._record_from_row(connection, row) if row is not None else None
 
+    def safe_get(self, capture_id: str) -> Optional[dict]:
+        """Read text/identity even when one capture path needs local recovery."""
+        normalized_id = _required_identifier(capture_id, "capture_id")
+        with self._connection() as connection:
+            row = self._select_capture_row(connection, normalized_id)
+            return self._safe_record_from_row(connection, row) if row is not None else None
+
     def search(
         self,
         query: str = "",
@@ -315,6 +324,26 @@ class CaptureStore:
         trashed: bool = False,
         limit: Optional[int] = None,
     ) -> list[CaptureRecord]:
+        return self._search(query, link_filter, trashed=trashed, limit=limit)
+
+    def safe_search(
+        self,
+        query: str = "",
+        link_filter: LinkFilter = "all",
+        *,
+        trashed: bool = False,
+        limit: Optional[int] = None,
+        task_id: Optional[str] = None,
+    ) -> list[dict]:
+        """Isolate per-row path failures; unsafe rows expose no usable path.
+
+        SQLite and whole-store failures still raise. This is not a relaxed
+        path API and never bypasses the strict read/write entry points.
+        """
+        return self._search(query, link_filter, trashed=trashed, limit=limit,
+                            task_id=task_id, safe=True)
+
+    def _search(self, query, link_filter, *, trashed, limit, task_id=None, safe=False):
         if not isinstance(query, str):
             raise TypeError("query must be a string")
         if link_filter not in {"unclassified", "linked", "all"}:
@@ -327,8 +356,13 @@ class CaptureStore:
             not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0
         ):
             raise ValueError("limit must be a positive integer or None")
+        if task_id is not None:
+            task_id = _required_identifier(task_id, "task_id")
 
-        self.recover_orphans()
+        # Per-task views must not rescan every PNG once for each legacy task.
+        # Whole-inbox search (and construction) performs recovery once.
+        if task_id is None:
+            self.recover_orphans()
 
         clauses = ["c.trashed_at IS NOT NULL" if trashed else "c.trashed_at IS NULL"]
         parameters: list[object] = []
@@ -354,17 +388,26 @@ class CaptureStore:
                 "WHERE l.capture_id = c.id)"
             )
 
+        if task_id is not None:
+            clauses.append('EXISTS (SELECT 1 FROM capture_links l WHERE l.capture_id=c.id AND l.task_id=?)')
+            parameters.append(task_id)
+
         sql = (
             "SELECT c.* FROM capture_items c WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY c.created_at DESC, c.id DESC"
         )
+        if task_id is not None:
+            sql += ' ORDER BY (SELECT l.linked_at FROM capture_links l WHERE l.capture_id=c.id AND l.task_id=?), c.id'
+            parameters.append(task_id)
+        else:
+            sql += ' ORDER BY c.created_at DESC, c.id DESC'
         if limit is not None:
             sql += " LIMIT ?"
             parameters.append(limit)
         with self._connection() as connection:
             rows = connection.execute(sql, parameters).fetchall()
-            return [self._record_from_row(connection, row) for row in rows]
+            reader = self._safe_record_from_row if safe else self._record_from_row
+            return [reader(connection, row) for row in rows]
 
     def count(
         self,
@@ -962,24 +1005,17 @@ class CaptureStore:
     def _path_for_record(self, record: CaptureRecord) -> Path:
         if not isinstance(record, CaptureRecord):
             raise TypeError("record must be a CaptureRecord")
-        path = record.path.expanduser().resolve(strict=False)
+        path = record.path.expanduser().absolute()
         owned_path = self._owned_path(path.name)
-        if path != owned_path:
+        # Public records now retain the logical app-owned path. Older records
+        # can contain the OS-resolved alias, but only the exact validated alias
+        # of this entry is accepted; arbitrary equivalent paths are not.
+        if path != owned_path and path != owned_path.resolve(strict=False):
             raise ValueError("capture path is outside the app-owned inbox")
         return owned_path
 
     def _owned_path(self, storage_name: str) -> Path:
-        if not isinstance(storage_name, str) or not storage_name:
-            raise ValueError("storage_name must be a non-empty filename")
-        if Path(storage_name).name != storage_name or storage_name in {".", ".."}:
-            raise ValueError("storage_name must not contain a directory")
-        root = self.directory.resolve(strict=False)
-        candidate = (root / storage_name).resolve(strict=False)
-        try:
-            candidate.relative_to(root)
-        except ValueError as exc:
-            raise ValueError("capture path is outside the app-owned inbox") from exc
-        return candidate
+        return owned_capture_path(self.directory, storage_name)
 
     def _select_capture_row(
         self,
@@ -1032,6 +1068,21 @@ class CaptureStore:
             ),
             updated_at=_datetime_from_text(row["updated_at"]),
         )
+
+    def _safe_record_from_row(self, connection: sqlite3.Connection, row: sqlite3.Row) -> dict:
+        try:
+            record = self._record_from_row(connection, row)
+            if not record.path.is_file():
+                record = None
+        except (ValueError, OSError):
+            record = None
+        text_fields = ('id', 'source', 'ocr_text', 'verified_text', 'created_at', 'updated_at')
+        result = {name: row[name] if isinstance(row[name], str) else '' for name in text_fields}
+        result.update({name: row[name] if isinstance(row[name], str) else None
+                       for name in ('verified_at', 'trashed_at')})
+        result.update(record=record, recovery_required=record is None,
+                      warning='원본 이미지 경로를 확인하지 못했습니다. 저장된 텍스트는 보존됩니다.' if record is None else '')
+        return result
 
     def _required_capture_rows(
         self,

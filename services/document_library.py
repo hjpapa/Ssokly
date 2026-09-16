@@ -16,6 +16,8 @@ from services.task_store import TaskStore
 
 
 SCHEMA_VERSION = 2
+_CAPTURE_WARNING = '캡처 이미지를 읽을 수 없습니다. 저장된 텍스트는 유지되며 복구가 필요합니다.'
+_DOCUMENT_WARNING = '일부 캡처를 읽을 수 없습니다. 저장된 텍스트는 유지되며 복구가 필요합니다.'
 _SCHEMA = (
     'CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, trashed_at TEXT)',
     'CREATE TABLE IF NOT EXISTS pages (id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id), capture_id TEXT, text TEXT NOT NULL, source_name TEXT NOT NULL, source_path TEXT, position INTEGER NOT NULL, updated_at TEXT NOT NULL, ocr_text TEXT NOT NULL DEFAULT \'\', edited INTEGER NOT NULL DEFAULT 0, UNIQUE(document_id,capture_id))',
@@ -42,6 +44,14 @@ def _stamp(previous=None):
 
 def _iso(value):
     return value.astimezone(timezone.utc).isoformat(timespec='microseconds') if value else ''
+
+
+def _safe_iso(value, fallback=''):
+    """A damaged capture's date must not hide its preserved text or siblings."""
+    try:
+        return _iso(datetime.fromisoformat(value) if isinstance(value, str) else value)
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        return fallback
 
 
 def _text(value):
@@ -119,7 +129,19 @@ class DocumentLibrary:
     def _page(self, row, capture=None):
         item = dict(row)
         if item['capture_id']:
-            capture = capture if capture is not None else self.capture_store.get(item['capture_id'])
+            if capture is None:
+                entry = self.capture_store.safe_get(item['capture_id'])
+                if entry is None or entry['record'] is None:
+                    page = self._unreadable_capture_page(entry or {
+                        'id': item['capture_id'], 'ocr_text': '',
+                        'verified_text': item['text'], 'verified_at': item['updated_at'],
+                        'updated_at': item['updated_at'],
+                    }, document_id=item['document_id'])
+                    return {**page, 'id': item['id'], 'legacy': False,
+                            'source_name': item['source_name'], 'source_path': None,
+                            'position': item['position'], 'missing': entry is None,
+                            'updated_at': page['updated_at'] or item['updated_at']}
+                capture = entry['record']
             return {'id': item['id'], 'document_id': item['document_id'], 'capture_id': item['capture_id'],
                     'path': str(capture.path) if capture else None,
                     'text': capture.effective_text if capture else item['text'],
@@ -130,18 +152,22 @@ class DocumentLibrary:
                     'ocr_status': capture.ocr_status if capture else 'unread',
                     'review_status': capture.review_status if capture else 'unverified',
                     'edited': capture.is_verified if capture else True,
+                    'warning': '', 'recovery_required': False,
                     'position': item['position']}
-        return {**item, 'edited': bool(item['edited']), 'path': None, 'legacy': False, 'readonly': False, 'missing': False}
+        return {**item, 'edited': bool(item['edited']), 'path': None, 'legacy': False, 'readonly': False,
+                'missing': False, 'warning': '', 'recovery_required': False}
 
     def _pages(self, db, document_id):
         return [self._page(row) for row in db.execute('SELECT * FROM pages WHERE document_id=? ORDER BY position,id', (document_id,))]
 
     def _document(self, db, row):
         pages = self._pages(db, row['id'])
+        needs_recovery = any(page['recovery_required'] for page in pages)
         return {'id': row['id'], 'title': row['title'], 'page_count': len(pages),
                 'created_at': row['created_at'],
                 'updated_at': max([row['updated_at'], *(page['updated_at'] for page in pages)]),
                 'legacy': False, 'readonly': False, 'trashed': row['trashed_at'] is not None,
+                'warning': _DOCUMENT_WARNING if needs_recovery else '', 'recovery_required': needs_recovery,
                 'thumbnail_path': next((page['path'] for page in pages if page['path']), None)}
 
     def _managed(self, db, document_id, expected_updated_at=None, *, allow_trashed=False):
@@ -236,6 +262,8 @@ class DocumentLibrary:
                 raise LibraryReadOnlyError('기존 페이지는 읽기 전용입니다. 새 문서로 담은 뒤 편집해 주세요.')
             self._managed(db, row['document_id'])
             if row['capture_id']:
+                if self._page(row)['readonly']:
+                    raise LibraryReadOnlyError('복구가 필요한 캡처의 저장된 텍스트는 변경할 수 없습니다.')
                 # CaptureStore is the sole owner of capture text. No second
                 # sidecar write can fail after the capture save has committed.
                 if not isinstance(expected_updated_at, str) or not expected_updated_at:
@@ -277,29 +305,66 @@ class DocumentLibrary:
         return {'id': 'capture:' + capture.id, 'title': capture.ocr_preview[:60] or capture.label,
                 'page_count': 1, 'created_at': _iso(capture.created_at), 'updated_at': _iso(capture.updated_at),
                 'legacy': True, 'readonly': True, 'trashed': capture.trashed_at is not None,
+                'warning': '', 'recovery_required': False,
                 'thumbnail_path': str(capture.path)}
 
+    @staticmethod
+    def _unreadable_capture_page(entry, document_id=None):
+        # Never resolve or open the untrusted path again, and never convert a
+        # deliberately empty teacher revision back into raw OCR.
+        verified = bool(entry.get('verified_at'))
+        ocr_text = entry.get('ocr_text', '')
+        verified_text = entry.get('verified_text', '')
+        ocr_text = ocr_text if isinstance(ocr_text, str) else ''
+        verified_text = verified_text if isinstance(verified_text, str) else ''
+        return {'id': 'capture:' + entry['id'], 'document_id': document_id or 'capture:' + entry['id'],
+                'capture_id': entry['id'], 'path': None,
+                'text': verified_text if verified else ocr_text, 'ocr_text': ocr_text,
+                'verified_text': verified_text, 'updated_at': _safe_iso(entry.get('updated_at')),
+                'source_name': entry.get('source', ''), 'source_path': None,
+                'legacy': True, 'readonly': True, 'missing': False,
+                'ocr_status': 'unavailable', 'review_status': 'unavailable', 'edited': verified,
+                'warning': _CAPTURE_WARNING, 'recovery_required': True}
+
+    def _capture_entry_page(self, entry, document_id=None):
+        return (self._legacy_capture_page(entry['record'], document_id=document_id)
+                if entry['record'] is not None else self._unreadable_capture_page(entry, document_id))
+
+    def _capture_entry_document(self, entry):
+        if entry['record'] is not None:
+            return self._capture_document(entry['record'])
+        page = self._unreadable_capture_page(entry)
+        title = next((line.strip()[:60] for line in page['text'].splitlines() if line.strip()), '복구가 필요한 캡처')
+        return {'id': page['document_id'], 'title': title, 'page_count': 1,
+                'created_at': _safe_iso(entry.get('created_at')), 'updated_at': page['updated_at'],
+                'legacy': True, 'readonly': True, 'trashed': bool(entry.get('trashed_at')),
+                'thumbnail_path': None, 'warning': _CAPTURE_WARNING, 'recovery_required': True}
+
     def _task_pages(self, task):
-        captures = self.capture_store.captures_for_task(task.id)
+        captures = self.capture_store.safe_search(task_id=task.id)
         pages = [{'id': 'legacy-text:' + task.id, 'document_id': task.id, 'capture_id': None,
                   'path': None, 'text': task.source_text, 'ocr_text': '', 'updated_at': _iso(task.updated_at),
-                  'source_name': task.source_name, 'source_path': task.source_path, 'legacy': True, 'readonly': True}]
+                  'source_name': task.source_name, 'source_path': task.source_path, 'legacy': True, 'readonly': True,
+                  'warning': '', 'recovery_required': False}]
         for capture in captures:
-            page = self._legacy_capture_page(capture, document_id=task.id)
-            page['id'] = 'legacy-capture:' + task.id + ':' + capture.id
+            page = self._capture_entry_page(capture, document_id=task.id)
+            page['id'] = 'legacy-capture:' + task.id + ':' + capture['id']
             page['text'] = ''  # The task's integrated teacher text is authoritative.
             pages.append(page)
         if not captures and task.capture_path:
             pages.append({'id': 'legacy-image:' + task.id, 'document_id': task.id, 'capture_id': None,
                           'path': task.capture_path, 'text': '', 'ocr_text': '', 'updated_at': _iso(task.updated_at),
-                          'source_name': task.source_name, 'source_path': task.source_path, 'legacy': True, 'readonly': True})
+                          'source_name': task.source_name, 'source_path': task.source_path, 'legacy': True, 'readonly': True,
+                          'warning': '', 'recovery_required': False})
         return pages
 
     def _task_document(self, task):
         pages = self._task_pages(task)
+        needs_recovery = any(page['recovery_required'] for page in pages)
         return {'id': task.id, 'title': task.title, 'page_count': len(pages),
                 'created_at': _iso(task.created_at), 'updated_at': _iso(task.updated_at),
                 'legacy': True, 'readonly': True, 'trashed': False,
+                'warning': _DOCUMENT_WARNING if needs_recovery else '', 'recovery_required': needs_recovery,
                 'thumbnail_path': next((page['path'] for page in pages if page['path']), None)}
 
     @staticmethod
@@ -308,7 +373,8 @@ class DocumentLibrary:
                 'capture_id': capture.id, 'path': str(capture.path), 'text': capture.effective_text,
                 'ocr_text': capture.ocr_text, 'updated_at': _iso(capture.updated_at),
                 'source_name': capture.source, 'source_path': str(capture.path), 'legacy': True, 'readonly': True,
-                'ocr_status': capture.ocr_status, 'review_status': capture.review_status}
+                'ocr_status': capture.ocr_status, 'review_status': capture.review_status,
+                'warning': '', 'recovery_required': False}
 
     def get_document(self, document_id):
         with self._db() as db:
@@ -316,8 +382,8 @@ class DocumentLibrary:
             if row:
                 return self._document(db, row)
         if document_id.startswith('capture:'):
-            capture = self.capture_store.get(document_id[len('capture:'):])
-            return self._capture_document(capture) if capture else None
+            capture = self.capture_store.safe_get(document_id[len('capture:'):])
+            return self._capture_entry_document(capture) if capture else None
         task = self.task_store.get(document_id)
         return self._task_document(task) if task else None
 
@@ -326,9 +392,9 @@ class DocumentLibrary:
             if db.execute('SELECT 1 FROM documents WHERE id=?', (document_id,)).fetchone():
                 return self._pages(db, document_id)
         if document_id.startswith('capture:'):
-            capture = self.capture_store.get(document_id[len('capture:'):])
+            capture = self.capture_store.safe_get(document_id[len('capture:'):])
             if capture:
-                return [self._legacy_capture_page(capture)]
+                return [self._capture_entry_page(capture)]
         else:
             task = self.task_store.get(document_id)
             if task:
@@ -348,8 +414,8 @@ class DocumentLibrary:
             result = [self._document(db, row) for row in all_managed if bool(row['trashed_at']) == bool(trashed)]
         if not trashed:
             result.extend(self._task_document(task) for task in self.task_store.search() if task.id not in managed_ids)
-        result.extend(self._capture_document(capture) for capture in self.capture_store.search(trashed=trashed)
-                      if capture.id not in assigned_captures)
+        result.extend(self._capture_entry_document(capture) for capture in self.capture_store.safe_search(trashed=trashed)
+                      if capture['id'] not in assigned_captures)
         if needle:
             matched = []
             for document in result:

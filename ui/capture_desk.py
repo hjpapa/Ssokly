@@ -46,6 +46,9 @@ class CaptureDeskApp(tk.Tk):
         self._compact_library = False
         self._compact_image = False
         self._layout_compact = None
+        self._layout_id = None
+        self._reset_main_sash = True
+        self._reset_work_sash = True
         self._visible_count = 250
         self.title('Ssokly · 캡처와 텍스트')
         self.geometry('1280x800')
@@ -66,13 +69,20 @@ class CaptureDeskApp(tk.Tk):
     def _build_ui(self):
         header = ttk.Frame(self, padding=(12, 10))
         header.pack(fill='x')
-        ttk.Label(header, text='SSOKLY', font=('Segoe UI', 16, 'bold')).pack(side='left', padx=(0, 14))
-        self.capture_button = ttk.Button(header, text='새 캡처', command=self.capture_new, style='Desk.TButton')
+        self._header_logo = ttk.Label(header, text='SSOKLY', font=('Segoe UI', 16, 'bold'))
+        self._header_logo.grid(row=0, column=0, sticky='w', padx=(0, 14))
+        self._header_primary = ttk.Frame(header)
+        self._header_primary.grid(row=0, column=1, sticky='w')
+        self._header_secondary = ttk.Frame(header)
+        self._header_secondary.grid(row=0, column=2, sticky='e')
+        header.columnconfigure(1, weight=1)
+        self.capture_button = ttk.Button(self._header_primary, text='새 캡처', command=self.capture_new, style='Desk.TButton')
         self.capture_button.pack(side='left', padx=3)
-        self.add_button = ttk.Button(header, text='+ 페이지', command=self.capture_page, style='Desk.TButton')
+        self.add_button = ttk.Button(self._header_primary, text='+ 페이지', command=self.capture_page, style='Desk.TButton')
         self.add_button.pack(side='left', padx=3)
-        ttk.Button(header, text='파일 열기', command=self.open_file, style='Desk.TButton').pack(side='left', padx=3)
-        ttk.Button(header, text='보관함', command=self.toggle_library).pack(side='right')
+        ttk.Button(self._header_primary, text='파일 열기', command=self.open_file, style='Desk.TButton').pack(side='left', padx=3)
+        self.library_button = ttk.Button(self._header_secondary, text='보관함', command=self.toggle_library)
+        self.library_button.pack(side='right')
         menu = tk.Menu(self, tearoff=False)
         menu.add_command(label='새 텍스트 문서', command=self.new_text_document)
         menu.add_command(label='기존 기록 보기', command=self.show_legacy_records)
@@ -81,7 +91,7 @@ class CaptureDeskApp(tk.Tk):
         menu.add_command(label='저장된 최신값 다시 열기…', command=self.reload_saved)
         menu.add_separator()
         menu.add_command(label='현재 문서 휴지통 / 복원', command=self.toggle_trash)
-        more = ttk.Menubutton(header, text='더보기', menu=menu)
+        more = ttk.Menubutton(self._header_secondary, text='더보기', menu=menu)
         more.pack(side='right', padx=6)
 
         options = ttk.Frame(self, padding=(12, 0, 12, 8))
@@ -96,7 +106,8 @@ class CaptureDeskApp(tk.Tk):
                               width=12, state='readonly')
         picker.pack(side='left', padx=7)
         picker.bind('<<ComboboxSelected>>', self._capture_mode_changed)
-        ttk.Label(options, text='이미지는 먼저 PC에 보관 · AI 실행 시 OpenAI 전송', foreground='#667085').pack(side='left')
+        self._transfer_hint = ttk.Label(options, text='이미지는 먼저 PC에 보관 · AI 실행 시 OpenAI 전송', foreground='#667085')
+        self._transfer_hint.pack(side='left')
         self.cancel_button = ttk.Button(options, text='처리 취소', command=self.cancel_jobs)
         self.cancel_button.pack(side='right')
 
@@ -109,6 +120,8 @@ class CaptureDeskApp(tk.Tk):
         ttk.Label(bottom, textvariable=self.save_state, foreground='#177568').pack(side='right', padx=8)
         self.main_split = ttk.Panedwindow(self, orient='horizontal')
         self.main_split.pack(fill='both', expand=True, padx=12, pady=(0, 8))
+        self.main_split.bind('<Configure>', self._schedule_layout)
+        self.main_split.bind('<ButtonRelease-1>', self._schedule_layout)
         self.library_panel = ttk.Frame(self.main_split, width=230)
         self.main_split.add(self.library_panel, weight=0)
         self.query = tk.StringVar()
@@ -131,6 +144,9 @@ class CaptureDeskApp(tk.Tk):
 
         self.workspace = ttk.Frame(self.main_split)
         self.main_split.add(self.workspace, weight=1)
+        self.recovery_warning = tk.StringVar(value='')
+        self.recovery_label = ttk.Label(self.workspace, textvariable=self.recovery_warning,
+            foreground='#b42318', wraplength=700)
         identity = ttk.Frame(self.workspace, padding=(10, 0, 0, 7))
         identity.pack(fill='x')
         self.title_var = tk.StringVar()
@@ -143,11 +159,14 @@ class CaptureDeskApp(tk.Tk):
         self.view_button.pack(side='right', padx=3)
         self.work_split = ttk.Panedwindow(self.workspace, orient='horizontal')
         self.work_split.pack(fill='both', expand=True, padx=(10, 0))
+        self.work_split.bind('<Configure>', self._schedule_layout)
+        self.work_split.bind('<ButtonRelease-1>', self._schedule_layout)
         self.image_panel = ttk.Frame(self.work_split)
         self.editor_panel = ttk.Frame(self.work_split)
         self.work_split.add(self.image_panel, weight=1)
         self.work_split.add(self.editor_panel, weight=1)
         page_bar = ttk.Frame(self.image_panel)
+        self._page_bar = page_bar
         page_bar.pack(fill='x', pady=(0, 5))
         self.page_selector = ttk.Combobox(page_bar, state='readonly', width=20)
         self.page_selector.pack(side='left', fill='x', expand=True)
@@ -167,11 +186,12 @@ class CaptureDeskApp(tk.Tk):
         self.editor_tabs.add(self.ai_panel, text='AI 정리')
         self.editor_tabs.bind('<<NotebookTabChanged>>', self._tab_changed)
         copies = ttk.Frame(self.text_panel)
+        self._copy_bar = copies
         copies.pack(fill='x', pady=6)
         for text, command in (('선택 복사', self.copy_selection), ('페이지 복사', self.copy_page),
                               ('전체 복사', self.copy_document)):
             ttk.Button(copies, text=text, command=command).pack(side='left', padx=2)
-        self.source_editor = scrolledtext.ScrolledText(self.text_panel, wrap='word', undo=True, height=8,
+        self.source_editor = scrolledtext.ScrolledText(self.text_panel, wrap='word', undo=True, height=8, width=1,
             font=('Malgun Gothic', 11), relief='flat', padx=12, pady=12, exportselection=False)
         self.source_editor.bind('<<Modified>>', self._source_modified)
         review_bar = ttk.Frame(self.text_panel)
@@ -183,24 +203,27 @@ class CaptureDeskApp(tk.Tk):
         self.table_view = InlineTableView(self.table_panel, on_copy=self.copy_text)
         self.table_view.pack(fill='both', expand=True)
         ai_controls = ttk.Frame(self.ai_panel)
+        self._ai_controls = ai_controls
         ai_controls.pack(fill='x', pady=6)
         self.ai_mode = tk.StringVar(value='요약')
         mode_picker = ttk.Combobox(ai_controls, textvariable=self.ai_mode, state='readonly', width=16,
                                    values=('요약', '일정·할 일 정리', '안내문'))
-        mode_picker.pack(side='left', padx=2)
+        self._ai_mode_picker = mode_picker
+        mode_picker.grid(row=0, column=0, sticky='w', padx=2)
         mode_picker.bind('<<ComboboxSelected>>', self._ai_mode_changed)
         self.audience = tk.StringVar(value='교직원')
         self.audience_picker = ttk.Combobox(ai_controls, textvariable=self.audience,
             state='readonly', width=11, values=('교직원', '학부모', '가정통신문'))
-        self.audience_picker.pack(side='left', padx=2)
-        self.audience_picker.pack_forget()
+        self.audience_picker.grid(row=0, column=1, sticky='w', padx=2)
+        self.audience_picker.grid_remove()
         self.generate_button = ttk.Button(ai_controls, text='정리하기', command=self.generate)
-        self.generate_button.pack(side='left', padx=2)
+        self.generate_button.grid(row=0, column=2, sticky='w', padx=2)
+        ai_controls.bind('<Configure>', self._schedule_layout)
         self.selection_only = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.ai_panel, text='선택한 텍스트만 정리 (기본: 문서 전체)', variable=self.selection_only).pack(anchor='w')
         self.output_note = tk.StringVar(value='요약·일정·안내문을 필요할 때만 만드세요.')
         ttk.Label(self.ai_panel, textvariable=self.output_note, wraplength=440, foreground='#667085').pack(fill='x', pady=5)
-        self.output_editor = scrolledtext.ScrolledText(self.ai_panel, wrap='word', undo=True, height=8,
+        self.output_editor = scrolledtext.ScrolledText(self.ai_panel, wrap='word', undo=True, height=8, width=1,
             font=('Malgun Gothic', 11), relief='flat', padx=12, pady=12)
         self.output_editor.bind('<<Modified>>', self._output_modified)
         ai_footer = ttk.Frame(self.ai_panel)
@@ -238,6 +261,8 @@ class CaptureDeskApp(tk.Tk):
             detail = f"{str(item.get('updated_at', ''))[:10]} · {item['page_count']}쪽"
             if item.get('legacy'):
                 detail += ' · 기존 기록'
+            if item.get('recovery_required'):
+                detail += ' · 복구 필요'
             opts = {'image': photo} if photo else {}
             if photo:
                 self._library_photos[item['id']] = photo
@@ -296,7 +321,8 @@ class CaptureDeskApp(tk.Tk):
         if document.get('trashed'):
             self.status.set('휴지통 자료 · 더보기 → 현재 문서 휴지통 / 복원으로 복원한 뒤 편집하세요.')
         self.save_state.set('읽기 전용' if locked else '저장됨')
-        if self.winfo_width() < 1050:
+        self._show_recovery_warning()
+        if self._is_compact():
             self._compact_library = False
             self._apply_layout()
         return True
@@ -313,6 +339,19 @@ class CaptureDeskApp(tk.Tk):
                       readonly=not self.page or self.page.get('readonly', False) or self.document.get('trashed', False))
         self.image_view.load_path(self.page.get('path') if self.page else None)
         self.table_view.set_text(self.page['text'] if self.page else '')
+        locked = not self.page or self.page.get('readonly') or self.document.get('readonly') or self.document.get('trashed')
+        self.read_button.configure(state='disabled' if locked else 'normal')
+        self._show_recovery_warning()
+
+    def _show_recovery_warning(self):
+        # Storage supplies only generic, privacy-safe messages; never display a
+        # raw exception or damaged path in the persistent recovery notice.
+        warning = ((self.page or {}).get('warning') or (self.document or {}).get('warning') or '')
+        self.recovery_warning.set(warning)
+        if warning:
+            self.recovery_label.pack(side='top', fill='x', padx=(10, 0), pady=(0, 5), before=self.work_split)
+        else:
+            self.recovery_label.pack_forget()
 
     def _page_selected(self, _event=None):
         index = self.page_selector.current()
@@ -393,6 +432,8 @@ class CaptureDeskApp(tk.Tk):
             if title_changed and latest['title'] != self.document['title']:
                 raise LibraryConflictError('제목이 다른 창에서 변경되었습니다.')
             if self._source_dirty and self.page:
+                if self.page.get('readonly') or self.page.get('recovery_required'):
+                    raise LibraryConflictError('복구가 필요한 페이지의 입력은 저장하지 않습니다.')
                 saved = self.library.save_page_text(self.page['id'], self.source_editor.get('1.0', 'end-1c'),
                     expected_updated_at=self.page['updated_at'])
                 self.page_records = [saved if p['id'] == saved['id'] else p for p in self.page_records]
@@ -459,9 +500,10 @@ class CaptureDeskApp(tk.Tk):
 
     def _ai_mode_changed(self, _event=None):
         if self.ai_mode.get() == '안내문':
-            self.audience_picker.pack(side='left', padx=2, before=self.generate_button)
+            self.audience_picker.grid()
         else:
-            self.audience_picker.pack_forget()
+            self.audience_picker.grid_remove()
+        self._schedule_layout()
 
     def move_page(self, direction):
         if not self.page or not self.document or self.document.get('readonly') or not self.flush_edits():
@@ -491,7 +533,7 @@ class CaptureDeskApp(tk.Tk):
             self.status.set('문서를 만들지 못했습니다. 저장 공간을 확인하세요.')
 
     def adopt_current(self):
-        if not self.document or not self.document.get('readonly') or self.document.get('trashed') or not self.flush_edits():
+        if not self.document or not self.document.get('readonly') or self.document.get('trashed') or self.document.get('recovery_required') or not self.flush_edits():
             return
         try:
             if str(self.document['id']).startswith('capture:'):
@@ -541,14 +583,22 @@ class CaptureDeskApp(tk.Tk):
             self.status.set('휴지통 상태를 저장하지 못했습니다.')
 
     def toggle_library(self):
-        if self.winfo_width() < 1050:
-            self._compact_library = not self._compact_library
+        # A pane can still be present after its sash was dragged to zero.
+        # Restore it with one click rather than first hiding that invisible pane.
+        present = str(self.library_panel) in tuple(map(str, self.main_split.panes()))
+        collapsed = (present and self.library_panel.winfo_ismapped() and len(self.main_split.panes()) == 2
+                     and self.main_split.sashpos(0) < self._layout_metrics()[0])
+        if self._is_compact():
+            self._compact_library = True if collapsed else not self._compact_library
         else:
-            self._library_requested = not self._library_requested
+            self._library_requested = True if collapsed else not self._library_requested
+        self._reset_main_sash = True
         self._apply_layout()
 
     def toggle_compact_view(self):
         self._compact_image = not self._compact_image
+        self._compact_library = False
+        self._reset_work_sash = True
         self._apply_layout()
 
     def _on_resize(self, event):
@@ -556,21 +606,107 @@ class CaptureDeskApp(tk.Tk):
             self._apply_layout()
             self.status_label.configure(wraplength=max(350, self.winfo_width() - 200))
 
-    def _apply_layout(self):
-        compact = self.winfo_width() < 1050
+    def _layout_metrics(self):
+        # Tk scaling is points-to-pixels. Requested Text widths are deliberately
+        # not used: an 80-column editor used to squeeze the image to zero.
+        scale = max(1.0, float(self.winfo_fpixels('1i')) / 96.0)
+        library_min = round(180 * scale)
+        library_width = round(220 * scale)
+        image_min = max(round(280 * scale), self._page_bar.winfo_reqwidth())
+        editor_min = max(round(320 * scale), self._copy_bar.winfo_reqwidth() + 20,
+                         self._ai_mode_picker.winfo_reqwidth() + self.generate_button.winfo_reqwidth() + 20)
+        return library_min, library_width, image_min, editor_min
+
+    def _is_compact(self):
+        _library_min, library_width, image_min, editor_min = self._layout_metrics()
+        reserved = library_width + 6 if self._library_requested else 0
+        return self.winfo_width() - 40 - reserved < image_min + editor_min + 6
+
+    def _schedule_layout(self, _event=None):
+        if not self._closing and self._layout_id is None:
+            self._layout_id = self.after_idle(self._settle_layout)
+
+    def _settle_layout(self):
+        self._layout_id = None
+        if self._closing:
+            return
+        self._apply_layout(schedule=False)
+        library_min, library_width, image_min, editor_min = self._layout_metrics()
+        if len(self.main_split.panes()) == 2:
+            width = self.main_split.winfo_width()
+            work_min = (image_min if self._compact_image else editor_min) if self._layout_compact else image_min + editor_min + 16
+            upper = width - work_min - 16
+            if upper >= library_min:
+                current = self.main_split.sashpos(0)
+                preferred = library_width if self._reset_main_sash else current
+                target = min(upper, max(library_min, preferred))
+                if current != target:
+                    self.main_split.sashpos(0, target)
+        if len(self.work_split.panes()) == 2:
+            width = self.work_split.winfo_width()
+            upper = width - editor_min - 6
+            if upper >= image_min:
+                current = self.work_split.sashpos(0)
+                preferred = width // 2 if self._reset_work_sash else current
+                target = min(upper, max(image_min, preferred))
+                if current != target:
+                    self.work_split.sashpos(0, target)
+        self._reset_main_sash = self._reset_work_sash = False
+
+    @staticmethod
+    def _set_panes(split, desired):
+        if tuple(map(str, split.panes())) == tuple(str(panel) for panel, _weight in desired):
+            return False
+        for pane in split.panes():
+            split.forget(pane)
+        for panel, weight in desired:
+            split.add(panel, weight=weight)
+        return True
+
+    def _apply_layout(self, *, schedule=True):
+        compact = self._is_compact()
+        library_min, _library_width, image_min, editor_min = self._layout_metrics()
         show_library = self._compact_library if compact else self._library_requested
-        panes = self.main_split.panes()
-        if show_library and str(self.library_panel) not in panes:
-            self.main_split.insert(0, self.library_panel, weight=0)
-        elif not show_library and str(self.library_panel) in panes:
-            self.main_split.forget(self.library_panel)
+        work_min = image_min if self._compact_image else editor_min
+        library_only = compact and show_library and self.winfo_width() - 40 < library_min + work_min
+        main = [(self.library_panel, 0)] if show_library else []
+        if not library_only:
+            main.append((self.workspace, 1))
+        if self._set_panes(self.main_split, main):
+            self._reset_main_sash = True
         desired = [self.image_panel if self._compact_image else self.editor_panel] if compact else [self.image_panel, self.editor_panel]
-        if list(self.work_split.panes()) != [str(panel) for panel in desired]:
-            for pane in self.work_split.panes():
-                self.work_split.forget(pane)
-            for panel in desired:
-                self.work_split.add(panel, weight=1)
+        if self._set_panes(self.work_split, [(panel, 1) for panel in desired]):
+            self._reset_work_sash = True
         self._layout_compact = compact
+        self.view_button.configure(text='텍스트 보기' if compact and self._compact_image else '원본 보기' if compact else '원본 / 텍스트')
+        self.recovery_label.configure(wraplength=max(250, self.winfo_width() - 330))
+        header_width = (self._header_logo.winfo_reqwidth() + self._header_primary.winfo_reqwidth()
+                        + self._header_secondary.winfo_reqwidth() + 52)
+        wrapped_header = self.winfo_width() < header_width
+        self._header_primary.grid_configure(row=1 if wrapped_header else 0,
+            column=0 if wrapped_header else 1, columnspan=3 if wrapped_header else 1)
+        self._header_secondary.grid_configure(column=2)
+        if compact:
+            self._transfer_hint.pack_forget()
+        elif not self._transfer_hint.winfo_manager():
+            self._transfer_hint.pack(side='left')
+        ai_width = self._ai_controls.winfo_width()
+        if ai_width > 1:
+            mode_width = self._ai_mode_picker.winfo_reqwidth() + 4
+            audience_width = self.audience_picker.winfo_reqwidth() + 4 if self.ai_mode.get() == '안내문' else 0
+            audience_row = int(mode_width + audience_width > ai_width)
+            if audience_width:
+                self._place_grid(self.audience_picker, row=audience_row, column=0 if audience_row else 1)
+            generate_row = audience_row + 1 if mode_width + audience_width + self.generate_button.winfo_reqwidth() + 4 > ai_width else 0
+            self._place_grid(self.generate_button, row=generate_row, column=0 if generate_row else 2)
+        if schedule:
+            self._schedule_layout()
+
+    @staticmethod
+    def _place_grid(widget, **coordinates):
+        current = widget.grid_info()
+        if any(str(current.get(key)) != str(value) for key, value in coordinates.items()):
+            widget.grid_configure(**coordinates)
 
     def _readonly_view(self, title, text):
         window = tk.Toplevel(self)
@@ -685,6 +821,10 @@ class CaptureDeskApp(tk.Tk):
             self.refresh_library(doc['id'])
             self.open_document(doc['id'])
             self._load_page(next(i for i, value in enumerate(self.page_records) if value['id'] == page['id']))
+            if self._is_compact():
+                self._compact_image = True
+                self._compact_library = False
+                self._apply_layout()
             self.status.set('캡처를 보관했습니다.')
             if auto_read and self.capture_mode.get() != '보관만':
                 self._read_image(page, automatic=True)
@@ -721,6 +861,9 @@ class CaptureDeskApp(tk.Tk):
         self._transfer().inherit_document_policy([old_id], [capture.id for capture in captures], new_id)
 
     def read_current_page(self):
+        if self.page and (self.page.get('readonly') or self.page.get('recovery_required')):
+            self.status.set('이 페이지는 읽기 전용입니다. 복구가 필요한 원본은 다시 읽거나 전송하지 않습니다.')
+            return
         if not self.page or not self.document or self.document.get('readonly') or self.document.get('trashed') or not self.flush_edits():
             self.status.set('편집할 문서를 선택하세요. 기존 기록은 먼저 새 문서로 가져오세요.')
             return
@@ -733,6 +876,9 @@ class CaptureDeskApp(tk.Tk):
 
     def _read_image(self, page, *, automatic=False):
         from services.ocr_service import extract_text_from_image
+        if page.get('readonly') or page.get('recovery_required'):
+            self.status.set('복구가 필요한 캡처는 읽거나 전송하지 않습니다. 저장된 텍스트는 유지합니다.')
+            return
         if any(meta['kind'] == 'ocr' and meta.get('capture_id') == page['capture_id'] for meta in self._jobs.values()):
             self.status.set('이 페이지를 읽고 있습니다.')
             return
@@ -792,6 +938,9 @@ class CaptureDeskApp(tk.Tk):
 
     def _read_file(self, page):
         from services.ocr_service import extract_text_from_file, extract_text_from_image
+        if page.get('readonly') or page.get('recovery_required'):
+            self.status.set('복구가 필요한 페이지는 읽거나 전송하지 않습니다. 저장된 텍스트는 유지합니다.')
+            return
         path = Path(page['source_path'])
         kind = attachment_kind(path)
         try:
@@ -965,7 +1114,7 @@ class CaptureDeskApp(tk.Tk):
             return False
         self._closing = True
         self.cancel_jobs()
-        for callback in (self._poll_id, self._autosave_id, self._refresh_id):
+        for callback in (self._poll_id, self._autosave_id, self._refresh_id, self._layout_id):
             if callback:
                 try:
                     self.after_cancel(callback)

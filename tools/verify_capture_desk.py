@@ -32,6 +32,9 @@ SUITES = (
     'tests.test_desk_mask_restore',
     'tests.test_capture_desk_recovery',
     'tests.test_capture_recovery',
+    'tests.test_capture_path_aliases',
+    'tests.test_library_isolation',
+    'tests.test_capture_desk_layout',
     'tests.test_legacy_reader',
     'tests.test_capture_desk_gate',
 )
