@@ -2,8 +2,15 @@
 import json
 import re
 from typing import Literal
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from services.date_evidence import supported_deadline, source_schedules
+
+class FieldEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    owner: str = ""
+    deadline: str = ""
+    deliverable: str = ""
+    destination: str = ""
 
 class Action(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -14,6 +21,9 @@ class Action(BaseModel):
     destination: str
     evidence: str
     kind: Literal["명시된 의무", "추천 실행", "확인 필요"]
+    task_type: Literal["학교 업무", "외부 기관 업무", "참고 일정"] = "학교 업무"
+    requires_submission: bool = True
+    field_evidence: FieldEvidence = Field(default_factory=FieldEvidence)
 
 class AnalysisDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -54,36 +64,80 @@ def review_parent_draft(draft):
         draft.questions.append("연락처·식별정보를 가렸습니다. 공개 가능한 학교 연락처인지 확인 후 입력하세요.")
     return draft
 
+def strict_schema(model):
+    """Keep old local records readable, but require every field on the wire."""
+    schema = model.model_json_schema()
+    def visit(node):
+        if isinstance(node, dict):
+            node.pop('default', None)
+            if node.get('type') == 'object':
+                node['required'] = list(node.get('properties', {}))
+                node['additionalProperties'] = False
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+    visit(schema)
+    return schema
+
+def _normalized(text):
+    # Preserve cell and paragraph boundaries; ignore only horizontal spaces.
+    return re.sub(r'[^\S\n\t]+', '', text.replace('\r\n', '\n')).strip()
+
+def valid_quote(quote, source):
+    return bool(quote.strip()) and _normalized(quote) in _normalized(source) and not re.search(r'⟦|\[확인 필요\]', quote)
+
+def inspect_action(action, source):
+    """One action-level issue, or field-level issues; never cascade both."""
+    if not valid_quote(action.evidence, source):
+        return ['업무 근거']
+    issues = []
+    for field, label in (("owner", "담당"), ("deadline", "기한"), ("deliverable", "제출물"), ("destination", "제출처")):
+        if not action.requires_submission and field in ('deliverable', 'destination'):
+            continue
+        value = getattr(action, field)
+        if not value:
+            continue  # Not supplied / not applicable is not a validation error.
+        quote = getattr(action.field_evidence, field) or action.evidence
+        supported = valid_quote(quote, source)
+        if field == 'deadline':
+            supported = supported and supported_deadline(value, quote) is not None
+        else:
+            supported = supported and _normalized(value) in _normalized(quote)
+        if not supported:
+            issues.append(label)
+    return issues
+
 def verify_evidence(document, source):
     document = document.model_copy(deep=True)
     for action in document.actions:
-        uncertain = False
-        if not action.evidence or re.sub(r'\s+', '', action.evidence) not in re.sub(r'\s+', '', source):
+        if not action.requires_submission:
+            action.deliverable = action.destination = ''
+            action.field_evidence.deliverable = action.field_evidence.destination = ''
+        issues = inspect_action(action, source)
+        if '업무 근거' in issues:
             action.evidence = ""
-            uncertain = True
-            document.questions.append(f"원문 근거 확인 필요: {action.action}")
-        # Date formatting may differ, but the cited task must support the date.
-        evidence = re.sub(r"\s+", "", action.evidence)
         for field, label in (("owner", "담당"), ("deadline", "기한"), ("deliverable", "제출물"), ("destination", "제출처")):
             value = getattr(action, field)
-            if field == 'deadline' and value:
-                matched = supported_deadline(value, action.evidence)
-                if matched is not None:
-                    action.deadline = matched
-                    continue
-                action.deadline = ''
-                uncertain = True
-                document.questions.append(f"기한 확인 필요: {action.action} (해당 업무의 근거와 날짜가 다르거나 모호합니다.)")
-                continue
-            if value and re.sub(r"\s+", "", value) not in evidence:
+            if not value:
+                setattr(action.field_evidence, field, "")
+            if label in issues or '업무 근거' in issues:
                 setattr(action, field, "")
-                uncertain = True
-                document.questions.append(f"{label} 확인 필요: {action.action} (근거에서 해당 값을 확인하지 못했습니다.)")
-        if uncertain:
+                setattr(action.field_evidence, field, "")
+            elif field == 'deadline' and value:
+                action.deadline = supported_deadline(value, action.field_evidence.deadline or action.evidence)
+        if issues:
             action.kind = "확인 필요"
+            document.questions.append(f"{action.action}: {'·'.join(issues)} 연결 확인 필요")
+    document.questions = list(dict.fromkeys(document.questions))
     return document
 
-def partial_actions(buffer):
+def action_details(action):
+    values = [('담당', action.owner or '원문 미기재'), ('기한', action.deadline), ('제출물', action.deliverable), ('제출처', action.destination)]
+    return ' · '.join(f'{label}: {value}' for label, value in values if value)
+
+def partial_actions(buffer, action_model=Action):
     """Decode complete objects only, never truncated JSON."""
     match = re.search(r'"actions"\s*:\s*\[', buffer)
     if not match:
@@ -93,7 +147,7 @@ def partial_actions(buffer):
     while tail and tail[0] != "]":
         try:
             item, end = json.JSONDecoder().raw_decode(tail)
-            result.append(Action.model_validate(item))
+            result.append(action_model.model_validate(item))
         except (ValueError, TypeError):
             break
         tail = tail[end:].lstrip()
@@ -131,17 +185,29 @@ def render_document(document, mode, source=None):
             lines.append("원문 명시 일정 · 내 담당 여부와 예정/마감 구분을 확인하세요.")
             lines.extend(f"- {when} · {context}" for context, when in schedules)
         else:
-            lines.extend(f"- {a.deadline or '기한 확인 필요'} · {a.action} · 담당: {a.owner or '담당 확인 필요'}" for a in document.actions)
+            dated = [a for a in document.actions if a.deadline]
+            lines.extend(f"- {a.deadline} · {a.action}" for a in dated)
+            if not dated:
+                lines.append('원문에서 연결된 일정이 없습니다.')
         lines.extend(["", "## 체크리스트", ""])
-        for a in document.actions:
-            lines.append(f"- [ ] [{a.kind}] {a.action}\n  담당: {a.owner or '담당 확인 필요'} · 기한: {a.deadline or '기한 확인 필요'}")
-            if a.deliverable or a.destination:
-                lines.append(f"  제출물: {a.deliverable or '확인 필요'} · 제출처: {a.destination or '확인 필요'}")
-        if not document.actions:
-            lines.append("- 원문에서 실행할 업무를 확인하지 못했습니다. 원문을 확인해 주세요.")
+        ready = [a for a in document.actions if a.task_type == '학교 업무' and a.kind != '확인 필요']
+        for a in ready:
+            lines.append(f"- [ ] [{a.kind}] {a.action}")
+            if action_details(a):
+                lines.append('  ' + action_details(a))
+        if not ready:
+            lines.append("- 검증된 학교 업무가 없습니다. 아래 참고·확인 항목을 검수하세요.")
+        pending = [a for a in document.actions if a.kind == '확인 필요']
+        if pending:
+            lines.extend(['', '## 검수 대기 업무', '', '아직 내 할 일로 담지 않습니다. 원문을 확인한 뒤 재분석하세요.'])
+            lines.extend(f'- {a.action}' + (f' · {action_details(a)}' if action_details(a) else '') for a in pending)
+        reference = [a for a in document.actions if a.task_type != '학교 업무' and a.kind != '확인 필요']
+        if reference:
+            lines.extend(['', '## 외부 기관·참고 사항', ''])
+            lines.extend(f'- [{a.task_type}] {a.action}' + (f' · {action_details(a)}' if action_details(a) else '') for a in reference)
         if document.questions:
             lines.extend(["", "## 확인할 사항", "", *[f"- {q}" for q in dict.fromkeys(document.questions)]])
-        evidence = list(dict.fromkeys(a.evidence for a in document.actions if a.evidence))
+        evidence = list(dict.fromkeys(q for a in document.actions for q in [a.evidence, *a.field_evidence.model_dump().values()] if q))
         if evidence:
             lines.extend(["", "## 원문 근거", "", *[f"- “{quote}”" for quote in evidence]])
         return "\n".join(lines)

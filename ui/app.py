@@ -844,7 +844,7 @@ class SsoklyApp(tk.Tk):
     def _build_source_tab(self) -> None:
         preferences = ttk.Frame(self.source_tab, style="Surface.TFrame")
         preferences.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(preferences, text="담당자별 업무 자동 정리 · GPT-5 nano\n캡처·분석 시 OpenAI로 전송됩니다.",
+        ttk.Label(preferences, text="담당자별 업무 자동 정리 · GPT-5 nano\nOpenAI 전송 · 근거 불일치 시 최대 1회 추가 재검토(비용 발생)",
                   style="Muted.TLabel").pack(anchor=tk.W)
         ttk.Button(preferences, text="내 할 일 보기", command=self.show_personal_todos).pack(anchor=tk.W, pady=(4, 0))
         ttk.Label(self.source_tab, text="인식된 원문", style="Section.TLabel").pack(anchor=tk.W)

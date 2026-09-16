@@ -91,7 +91,10 @@ class AnalysisPipelineTests(unittest.TestCase):
         self.assertEqual(len(keys), 4)
 
     def test_stream_and_cache_reuse_without_second_api_call(self):
-        payload = sample().model_dump_json()
+        wire = sample().model_dump()
+        wire['actions'][0]['evidence'] = {'line': 1, 'cell': 0}
+        wire['actions'][0]['field_evidence'] = {f: {'line': 1, 'cell': 0} for f in ('owner','deadline','deliverable','destination')}
+        payload = json.dumps(wire)
         stream = MagicMock()
         stream.__enter__.return_value = stream
         stream.__iter__.return_value = iter([SimpleNamespace(type="response.output_text.delta", delta=payload)])

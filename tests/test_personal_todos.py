@@ -25,7 +25,7 @@ class PersonalTodoTests(unittest.TestCase):
         self.assertIn("담당: 담임", items[0])
         self.assertIn("10월 5일", items[0])
         self.assertIn("행정실", items[1])
-        self.assertIn("담당 확인 필요", items[2])
+        self.assertIn("담당: 원문 미기재", items[2])
 
     def test_parser_ignores_completed_and_other_sections(self):
         text = "## 체크리스트\n- [ ] 첫 업무\n  담당: 담임\n- [x] 완료 업무\n  기한: 어제\n## 전달 문구\n- [ ] 가짜 항목"

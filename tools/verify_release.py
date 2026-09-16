@@ -1,4 +1,4 @@
-"""Synthetic release smoke test. --live opts into three paid nano calls."""
+"""Synthetic release smoke test. --live opts into 3-4 paid nano calls."""
 import argparse
 import json
 from pathlib import Path
