@@ -338,6 +338,86 @@ class WorkCardStoreTests(unittest.TestCase):
         self.assertTrue(row['source_stale'])
         self.assertIn('원문 변경 · 이전 근거 재확인 필요', row['item'])
 
+    def test_saved_results_use_one_connection_without_public_post_commit_reads(self):
+        with patch.object(self.store, 'get_card', side_effect=AssertionError('post-commit read')), \
+                patch.object(self.store, '_db', wraps=self.store._db) as connections:
+            updated = self.store.update_card(self.card['id'], {'deadline': ''}, 1)
+            self.assertEqual(connections.call_count, 1)
+            self.assertEqual(updated['deadline'], '')
+            connections.reset_mock()
+            merged = self.store.merge_analysis('synthetic-doc', [proposal(owner='새 AI 담당')])
+            self.assertEqual(connections.call_count, 1)
+            self.assertEqual(merged[0]['deadline'], '')
+            connections.reset_mock()
+            candidate = self.store.merge_analysis('synthetic-doc', [proposal(action='다른 업무')])[0]
+            self.assertEqual(connections.call_count, 1)
+            connections.reset_mock()
+            adopted = self.store.adopt_card(candidate['id'], candidate['version'])
+            self.assertEqual(connections.call_count, 1)
+            self.assertFalse(adopted['comparison_candidate'])
+        versions = {item['id']: item['version'] for item in self.store.list_cards('synthetic-doc')}
+        with patch.object(self.store, 'list_artifacts', side_effect=AssertionError('post-commit read')), \
+                patch.object(self.store, '_db', wraps=self.store._db) as connections:
+            artifact = self.store.save_artifact('synthetic-doc', '안내', '저장된 초안', versions, 1)
+            self.assertEqual(connections.call_count, 1)
+        reopened = WorkCardStore(self.temp.name)
+        self.assertEqual(reopened.get_card(updated['id'])['deadline'], '')
+        self.assertEqual(reopened.list_artifacts('synthetic-doc'), [artifact])
+
+    def test_update_snapshot_decode_failure_rolls_back_values_and_confirmation(self):
+        with patch.object(WorkCardStore, '_decode_card', side_effect=ValueError('synthetic snapshot decode')):
+            with self.assertRaisesRegex(ValueError, 'snapshot decode'):
+                self.store.update_card(self.card['id'], {'deadline': ''}, 1,
+                                       confirmation_changes={'deadline': True})
+        self.assertEqual(WorkCardStore(self.temp.name).get_card(self.card['id']), self.card)
+
+    def test_merge_second_snapshot_failure_rolls_back_whole_batch(self):
+        decode = WorkCardStore._decode_card
+        snapshots = []
+
+        def fail_second(row, version):
+            snapshots.append(row['id'])
+            if len(snapshots) == 2:
+                raise ValueError('synthetic second snapshot')
+            return decode(row, version)
+
+        with patch.object(WorkCardStore, '_decode_card', side_effect=fail_second):
+            with self.assertRaisesRegex(ValueError, 'second snapshot'):
+                self.store.merge_analysis('synthetic-doc', [proposal(owner='새 AI 담당'), proposal(action='추가 업무')])
+        self.assertEqual(len(snapshots), 2)
+        self.assertEqual(WorkCardStore(self.temp.name).list_cards('synthetic-doc'), [self.card])
+
+    def test_adopt_snapshot_failure_keeps_candidate_and_version(self):
+        candidate = self.store.merge_analysis('synthetic-doc', [proposal(action='추가 업무')])[0]
+        self.assertTrue(candidate['comparison_candidate'])
+        with patch.object(WorkCardStore, '_decode_card', side_effect=ValueError('synthetic adopt snapshot')):
+            with self.assertRaisesRegex(ValueError, 'adopt snapshot'):
+                self.store.adopt_card(candidate['id'], candidate['version'])
+        self.assertEqual(WorkCardStore(self.temp.name).get_card(candidate['id']), candidate)
+
+    def test_artifact_snapshot_failure_rolls_back_artifact_and_review_rows(self):
+        with patch.object(WorkCardStore, '_artifact_stale', side_effect=sqlite3.OperationalError('synthetic snapshot read')):
+            with self.assertRaisesRegex(sqlite3.OperationalError, 'snapshot read'):
+                self.store.save_artifact('synthetic-doc', '안내', '실패한 초안', {self.card['id']: 1}, 1)
+        self.assertEqual(WorkCardStore(self.temp.name).list_artifacts('synthetic-doc'), [])
+        with closing(sqlite3.connect(self.store.path)) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM artifact_reviews').fetchone()[0], 0)
+        saved = self.store.save_artifact('synthetic-doc', '안내', '재시도 초안', {self.card['id']: 1}, 1)
+        self.assertEqual(self.store.list_artifacts('synthetic-doc'), [saved])
+
+    def test_new_artifact_does_not_reread_unrelated_corrupt_history(self):
+        previous = self.store.save_artifact('synthetic-doc', '안내', '이전 초안', {self.card['id']: 1}, 1)
+        with closing(sqlite3.connect(self.store.path)) as db, db:
+            db.execute('UPDATE artifacts SET card_versions_json=? WHERE id=?', ('{', previous['id']))
+        saved = self.store.save_artifact('synthetic-doc', '안내', '새 초안', {self.card['id']: 1}, 1)
+        self.assertEqual(saved['content'], '새 초안')
+        self.assertFalse(saved['stale'])
+        with closing(sqlite3.connect(self.store.path)) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM artifacts').fetchone()[0], 2)
+            self.assertEqual(db.execute('SELECT card_versions_json FROM artifacts WHERE id=?', (previous['id'],)).fetchone()[0], '{')
+        with self.assertRaises(ValueError):
+            self.store.list_artifacts('synthetic-doc')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -11,6 +11,11 @@
 - 재개 기준 `a575f16`: `.venv\Scripts\python.exe tools/verify_v2_release.py` 161개 통과(14.230초), 실패·건너뜀·통신 시도 0. Git fetch 후 원격 main 차이 0/0.
 - 중간 종료 재현: 초안 이력 저장 후 업무 본문 저장 전에 앱 객체 종료/재생성. 새 회귀 1개는 수정 전 실패(이전 본문에 새 버전 연결), 수정 후 `.venv\Scripts\python.exe -m unittest tests.test_v2_app_flow -q` **22개 통과, 4.729초**. 일치 이력 복구·알 수 없는 본문 보존·다중 후보 미확인 표시 3개 신규 회귀 포함.
 - 모두 합성/mock·임시 저장소. 실제 OS 강제 종료·전원 손실·디스크 손상 시험이나 유료 API는 수행하지 않음.
+- 후속 최종 `.venv\Scripts\python.exe -m unittest discover -s tests -q`: **346개 통과, 32.262초, 건너뜀 없음**. 기준 321개에 복구 3개·시간 표현 9개·저장 실패 주입 13개 추가.
+- `.venv\Scripts\python.exe tools/verify_v2_release.py`: **186개 통과, 13.560초**, 실패/오류/건너뜀/통신 시도 모두 0. 신규 `tests.test_storage_faults`도 차단 검증에 포함.
+- 시간 표현: 반·초·대략 시각·연속 범위의 원문 표기, 명시 AM/PM 앞/뒤 및 24시간 비교, 오전/오후 일부 생략 범위의 임의 확정 거부, 잘못된 정밀 시각의 카드 근거 미검증 표시, 일반 단어 오탐 방지, 빨간 검수 강조 확인. 집중 70개 통과(0.461초)는 별도 중간 결과.
+- 저장: 수정/병합/채택/초안 반환이 단일 연결·동일 트랜잭션을 사용함을 검증. 반환 스냅샷 조회/디코딩 실패와 실제 SQLite deferred 제약을 이용한 COMMIT 실패에서 이전 값/버전·초안·확인 서명 rollback 확인. 포인터/전송 정책 실패 후 재생성 복원, 업그레이드 마지막 DDL 실패의 rollback·백업·재시도, 미래 스키마 거부 시 바이트 불변 확인. 집중 49개 통과(0.904초)는 별도 중간 결과.
+- 최종 `.venv\Scripts\python.exe tools/verify_release.py`: `passed: true`, `live: false`. `compileall -q services ui tests tools`, `pip check`, `git diff --check` 통과. 기존 Pillow 폐기 예정 경고·의도적 재검토 실패 로그는 테스트 실패가 아님.
 
 ### 이전 단계별 결과
 

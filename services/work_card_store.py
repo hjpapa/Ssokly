@@ -211,13 +211,18 @@ class WorkCardStore:
 
     def get_card(self, card_id):
         with self._db() as db:
-            row = db.execute('SELECT cards.*, documents.version AS current_source_version FROM cards '
-                             'JOIN documents ON documents.id=cards.document_id WHERE cards.id=?',
-                             (card_id,)).fetchone()
-            card = self._decode_card(row, row['current_source_version']) if row else None
-            if card:
-                card.pop('current_source_version', None)
-            return card
+            return self._card_snapshot(db, card_id)
+
+    @classmethod
+    def _card_snapshot(cls, db, card_id):
+        """Read the return value before the writing transaction commits."""
+        row = db.execute('SELECT cards.*, documents.version AS current_source_version FROM cards '
+                         'JOIN documents ON documents.id=cards.document_id WHERE cards.id=?',
+                         (card_id,)).fetchone()
+        card = cls._decode_card(row, row['current_source_version']) if row else None
+        if card:
+            card.pop('current_source_version', None)
+        return card
 
     @staticmethod
     def _proposal_fields(action, source, document_id, source_version):
@@ -312,7 +317,8 @@ class WorkCardStore:
                     db.execute('INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?)',
                                (key, document_id, 1, source_version, identity, _json(fields), _json(action), int(candidate), now, now))
                     result_ids.append(key)
-        return [self.get_card(key) for key in result_ids]
+            saved = [self._card_snapshot(db, key) for key in result_ids]
+        return saved
 
     def update_card(self, card_id, changes, expected_version, *, confirmation_changes=None, expected_review_signature=None):
         confirmation_changes = confirmation_changes or {}
@@ -342,7 +348,8 @@ class WorkCardStore:
                 after_content = {name: {key: value for key, value in field.items() if key != 'confirmed'} for name, field in fields.items()}
                 db.execute('UPDATE cards SET fields_json=?,version=version+?,updated_at=? WHERE id=?',
                            (_json(fields), int(before_content != after_content), _now(), card_id))
-        return self.get_card(card_id)
+            saved = self._card_snapshot(db, card_id)
+        return saved
 
     def set_confirmations(self, card_id, changes, expected_version=None, expected_review_signature=None):
         if expected_version is None:
@@ -375,7 +382,8 @@ class WorkCardStore:
                 raise CardConflictError('업무가 변경되어 비교 후보를 채택하지 않았습니다.')
             if row['comparison_candidate']:
                 db.execute('UPDATE cards SET comparison_candidate=0,version=version+1,updated_at=? WHERE id=?', (_now(), card_id))
-        return self.get_card(card_id)
+            saved = self._card_snapshot(db, card_id)
+        return saved
 
     def save_artifact(self, document_id, kind, content, card_versions, source_version, review_signatures=None):
         key = uuid.uuid4().hex
@@ -391,18 +399,24 @@ class WorkCardStore:
                        (key, document_id, str(kind), str(content), _json(card_versions), source_version, _now()))
             signatures = self._review_signatures(db, document_id) if review_signatures is None else review_signatures
             db.execute('INSERT INTO artifact_reviews VALUES (?,?)', (key, _json(signatures)))
-        return next(item for item in self.list_artifacts(document_id) if item['id'] == key)
+            row = db.execute('SELECT * FROM artifacts WHERE id=?', (key,)).fetchone()
+            saved = self._artifact_snapshot(db, row)
+        return saved
+
+    @classmethod
+    def _artifact_snapshot(cls, db, row):
+        item = dict(row)
+        item['card_versions'] = json.loads(item.pop('card_versions_json'))
+        review = db.execute('SELECT signatures_json FROM artifact_reviews WHERE artifact_id=?', (item['id'],)).fetchone()
+        item['review_signatures'] = json.loads(review['signatures_json']) if review else None
+        item['stale'] = cls._artifact_stale(db, item)
+        return item
 
     def list_artifacts(self, document_id):
         with self._db() as db:
             result = []
             for row in db.execute('SELECT * FROM artifacts WHERE document_id=? ORDER BY rowid DESC', (document_id,)):
-                item = dict(row)
-                item['card_versions'] = json.loads(item.pop('card_versions_json'))
-                review = db.execute('SELECT signatures_json FROM artifact_reviews WHERE artifact_id=?', (item['id'],)).fetchone()
-                item['review_signatures'] = json.loads(review['signatures_json']) if review else None
-                item['stale'] = self._artifact_stale(db, item)
-                result.append(item)
+                result.append(self._artifact_snapshot(db, row))
             return result
 
     @staticmethod
