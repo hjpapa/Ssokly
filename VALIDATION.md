@@ -6,6 +6,13 @@
 
 ## 단계별 후속 검증 — 2026-09-17
 
+### 캡처 중심 재구성 1단계: 기반 검증
+
+- 최종 `.venv\Scripts\python.exe -m unittest tests.test_document_library tests.test_desk_widgets -q`: **38개 통과, 2.147초**. 저장 계층 신규 28개와 이미지/인라인 표/썸네일 위젯 신규 10개. 기본 진입점은 아직 변경하지 않았으며 전체 앱 시험 결과로 해석하지 않음.
+- 저장 집중 `.venv\Scripts\python.exe -m unittest tests.test_document_library tests.test_capture_inbox_store tests.test_task_store tests.test_personal_todos -q`: **63개 통과, 2.170초**. 임시 DB의 빈 수정값/재OCR/검색/순서/이력/CAS/휴지통/실제 commit 실패 rollback/가산 migration 및 백업/기존 데이터 보존 검사.
+- 위젯은 허용된 Windows Tk 환경에서 합성 이미지로 검사. 기본 sandbox의 init.tcl 접근 오류는 실행 환경 제약으로 구분하며, 숨긴 Tk의 resize는 바인딩된 handler 호출로 검증. 실제 마우스/배율 전수 확인은 아님. 클립보드는 직접 쓰지 않고 callback 인자로 검사.
+- 초기 결과 이력 시간 동률의 정렬 문제를 보완했고 저장 신규 28개에 회귀 포함. 실제 업무 DB·API·공문 미사용, 기존 모델 품질 시험을 다시 실행한 것이 아님.
+
 ### 긴 표·병합 셀·표 보기 개선 검증
 
 - 합성 HWPX·전사 텍스트·임시 저장소·Tk 위젯을 사용하며 실제 공문/사용자 DB·API·키를 검증 입력으로 사용하지 않음. 클립보드 호출은 mock으로 검사하여 사용자 클립보드는 덮어쓰지 않음.
