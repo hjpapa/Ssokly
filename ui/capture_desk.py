@@ -586,7 +586,12 @@ class CaptureDeskApp(tk.Tk):
 
     def show_original_text(self):
         if self.page:
-            return self._readonly_view('원래 인식 내용 · 현재 수정본은 유지됩니다', self.page.get('ocr_text', ''))
+            latest = self.page.get('ocr_text', '')
+            initial = self.library.initial_ocr(self.page['id']) if not self.page.get('legacy') else None
+            text = initial if initial is not None else latest
+            if initial is not None and initial != latest:
+                text = '처음 인식한 내용\n\n' + initial + '\n\n────────\n최근 인식한 내용\n\n' + latest
+            return self._readonly_view('원래 인식 내용 · 현재 수정본은 유지됩니다', text)
 
     def show_legacy_records(self):
         from services.legacy_reader import read_legacy_records
@@ -686,7 +691,8 @@ class CaptureDeskApp(tk.Tk):
             return page
         except Exception:
             self.refresh_library()
-            self.status.set('원본 이미지는 보관했습니다. 문서 연결은 다시 시도하세요.' if record else '캡처를 저장하지 못했습니다. 저장 공간을 확인하세요.')
+            self.status.set('원본 이미지는 보관했습니다. 문서 연결은 다시 시도하세요.' if record else
+                            '캡처 보관을 완료하지 못했습니다. 저장 공간과 보관함을 확인하세요. 저장된 PNG는 조회·재시작 때 복구합니다.')
             return None
 
     def _transfer(self):
@@ -791,6 +797,7 @@ class CaptureDeskApp(tk.Tk):
         try:
             if kind in ('hwpx', 'text'):
                 text = read_hwpx_file(path) if kind == 'hwpx' else read_text_file(path)
+                self.library.remember_initial_ocr(page['id'], page.get('ocr_text') or text)
                 self.library.update_page_ocr(page['id'], text, expected_updated_at=page['updated_at'])
                 self._refresh_current_page(page['document_id'], page['id'])
                 self.status.set('로컬 원문을 다시 읽었습니다. 수정본은 유지합니다.')
@@ -910,11 +917,14 @@ class CaptureDeskApp(tk.Tk):
                     continue
                 if metadata['kind'] == 'ocr':
                     before = next(p for p in self.library.pages(metadata['document_id']) if p['id'] == metadata['page_id'])
+                    self.library.remember_initial_ocr(metadata['page_id'], before.get('ocr_text') or value)
                     self._transfer().record_ocr(metadata['capture_id'], metadata['snapshot'], value)
                     self.library.capture_store.update_ocr(metadata['capture_id'], value, profile='gpt-5-nano')
                     self._refresh_current_page(metadata['document_id'], metadata['page_id'], previous_token=before['updated_at'])
                     self.status.set('텍스트 인식 완료 · 직접 수정한 텍스트는 유지합니다.')
                 elif metadata['kind'] == 'file':
+                    before = next(p for p in self.library.pages(metadata['document_id']) if p['id'] == metadata['page_id'])
+                    self.library.remember_initial_ocr(metadata['page_id'], before.get('ocr_text') or value)
                     self.library.update_page_ocr(metadata['page_id'], value, expected_updated_at=metadata['expected_updated_at'])
                     self._refresh_current_page(metadata['document_id'], metadata['page_id'], previous_token=metadata['expected_updated_at'])
                     self.status.set('파일 읽기 완료 · 원문과 대조해 활용하세요.')

@@ -358,6 +358,47 @@ class DocumentLibraryTests(unittest.TestCase):
             self.reopen()
         self.assertEqual(self.library.path.read_bytes(), before)
 
+    def test_initial_ocr_is_write_once_across_reread_and_restart(self):
+        capture = self.capture('최초 OCR\t\n')
+        document = self.library.adopt_capture(capture.id)
+        page = self.library.pages(document['id'])[0]
+        self.assertIsNone(self.library.initial_ocr(page['id']))
+        self.assertEqual(self.library.remember_initial_ocr(page['id'], page['ocr_text']), '최초 OCR\t\n')
+        self.library.capture_store.update_ocr(capture.id, '최근 OCR')
+        self.assertEqual(self.library.remember_initial_ocr(page['id'], '최근 OCR'), '최초 OCR\t\n')
+        reopened = self.reopen()
+        self.assertEqual(reopened.initial_ocr(page['id']), '최초 OCR\t\n')
+        self.assertEqual(reopened.pages(document['id'])[0]['ocr_text'], '최근 OCR')
+
+    def test_initial_ocr_explicit_empty_is_not_replaced(self):
+        document = self.library.create_document()
+        page = self.library.add_text_page(document['id'], '')
+        self.assertEqual(self.library.remember_initial_ocr(page['id'], ''), '')
+        self.assertEqual(self.library.remember_initial_ocr(page['id'], '나중 값'), '')
+        self.assertEqual(self.reopen().initial_ocr(page['id']), '')
+
+    def test_initial_ocr_snapshot_failure_rolls_back_and_allows_retry(self):
+        document = self.library.create_document()
+        page = self.library.add_text_page(document['id'], '원문 유지')
+        with patch('services.document_library.json.loads', side_effect=ValueError('synthetic decode fault')):
+            with self.assertRaises(ValueError):
+                self.library.remember_initial_ocr(page['id'], '최초 인식')
+        reopened = self.reopen()
+        self.assertIsNone(reopened.initial_ocr(page['id']))
+        self.assertEqual(reopened.document_text(document['id']), '원문 유지')
+        self.assertEqual(reopened.remember_initial_ocr(page['id'], '재시도 인식'), '재시도 인식')
+
+    def test_initial_ocr_cannot_write_legacy_or_unknown_pages(self):
+        capture = self.capture()
+        task = self.library.task_store.create(title='기존 업무', source_text='기존 원문')
+        for page_id in ('capture:' + capture.id, 'legacy-text:' + task.id, 'missing-page'):
+            with self.subTest(page_id=page_id):
+                with self.assertRaises(LibraryReadOnlyError):
+                    self.library.remember_initial_ocr(page_id, '기록 금지')
+                self.assertIsNone(self.library.initial_ocr(page_id))
+        self.assertEqual(self.library.capture_store.get(capture.id), capture)
+        self.assertEqual(self.library.task_store.get(task.id), task)
+
 
 if __name__ == '__main__':
     unittest.main()

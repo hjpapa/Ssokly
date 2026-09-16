@@ -80,7 +80,7 @@ class ZoomImageView(ttk.Frame):
             with Image.open(path) as image:
                 self.set_image(image)
             return True
-        except (OSError, ValueError, Image.DecompressionBombError):
+        except (OSError, ValueError, SyntaxError, EOFError, Image.DecompressionBombError):
             self.set_image(None)
             self.status.set('이미지를 열 수 없습니다')
             return False
@@ -236,7 +236,7 @@ class ThumbnailCache:
             with Image.open(path) as image:
                 image.thumbnail(size, Image.Resampling.LANCZOS)
                 photo = ImageTk.PhotoImage(image, master=self.master)
-        except (OSError, ValueError, Image.DecompressionBombError):
+        except (OSError, ValueError, SyntaxError, EOFError, Image.DecompressionBombError):
             return None
         self._items[key] = photo
         while len(self._items) > self.max_items:

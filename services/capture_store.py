@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 from typing import Iterable, Iterator, Literal, Optional, Union
 from uuid import UUID, uuid4, uuid5
@@ -21,6 +22,9 @@ CAPTURE_INBOX_DIRECTORY_NAME = "capture_inbox"
 METADATA_DATABASE_FILENAME = "capture_inbox.sqlite3"
 METADATA_SCHEMA_VERSION = 2
 LEGACY_IMPORT_NAMESPACE = UUID("4431e221-6dc9-4fc8-8efb-f61b26972d39")
+_UUID_FILENAME = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+_CAPTURE_FILENAME = re.compile(r'(?P<stamp>\d{8}_\d{6}_\d{6})_(?P<id>' + _UUID_FILENAME + r')_(?P<source>[0-9A-Za-z가-힣_-]{1,32})\.png')
+_LEGACY_FILENAME = re.compile(r'legacy_(?P<id>' + _UUID_FILENAME + r')\.png')
 
 OCRStatus = Literal["unread", "ready", "failed"]
 LinkFilter = Literal["unclassified", "linked", "all"]
@@ -151,6 +155,7 @@ class CaptureStore:
         self.db_path = self.directory / METADATA_DATABASE_FILENAME
         self.directory.mkdir(parents=True, exist_ok=True)
         self._initialize_schema()
+        self.recover_orphans()
         if self._uses_default_directory:
             self._import_legacy_captures()
 
@@ -173,7 +178,6 @@ class CaptureStore:
             if image.mode in {"1", "L", "LA", "P", "RGB", "RGBA", "I", "I;16"}
             else image.convert("RGB")
         )
-        file_promoted = False
         try:
             prepared_image.save(
                 temporary_path,
@@ -183,7 +187,6 @@ class CaptureStore:
             width, height = _verified_image_size(temporary_path)
             byte_size, content_sha256 = _file_metadata(temporary_path)
             temporary_path.replace(path)
-            file_promoted = True
 
             now_text = _datetime_to_text(created_at)
             with self._connection() as connection:
@@ -194,6 +197,7 @@ class CaptureStore:
                         content_sha256, ocr_status, ocr_text, ocr_error,
                         ocr_profile, created_at, updated_at, trashed_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'unread', '', '', '', ?, ?, NULL)
+                    ON CONFLICT(storage_name) DO NOTHING
                     """,
                     (
                         capture_id,
@@ -208,15 +212,91 @@ class CaptureStore:
                     ),
                 )
                 row = self._select_capture_row(connection, capture_id)
+                if (row is None or row['storage_name'] != filename
+                        or row['content_sha256'] != content_sha256):
+                    raise CaptureStoreError('capture metadata does not match the saved image')
+                # Another process may recover the promoted PNG before this
+                # insert. Retain its OCR/review/link state, only restoring the
+                # original display source which the filename may abbreviate.
+                if row['source'] != normalized_source:
+                    connection.execute('UPDATE capture_items SET source=? WHERE id=?',
+                                       (normalized_source, capture_id))
+                    row = self._select_capture_row(connection, capture_id)
                 record = self._record_from_row(connection, row)
-        except Exception:
-            if file_promoted:
-                path.unlink(missing_ok=True)
-            raise
         finally:
+            # Once promoted, the PNG is the recoverable original even when the
+            # metadata transaction/commit fails. Never delete it as rollback.
             temporary_path.unlink(missing_ok=True)
 
         return record
+
+    def recover_orphans(self) -> int:
+        """Recover verified app-named PNGs in this inbox, without following links.
+
+        Existing rows (including trashed captures) are never modified. Failed
+        files remain in place for a later retry; arbitrary PNG names, pending
+        writes, subdirectories and files outside this directory are not imports.
+        """
+        try:
+            with self._connection() as connection:
+                known = {row[0] for row in connection.execute('SELECT storage_name FROM capture_items')}
+            candidates = list(self.directory.iterdir())
+        except (OSError, sqlite3.Error):
+            return 0
+        recovered = 0
+        for candidate in candidates:
+            if candidate.name in known:
+                continue
+            match = _CAPTURE_FILENAME.fullmatch(candidate.name)
+            legacy = _LEGACY_FILENAME.fullmatch(candidate.name) if match is None else None
+            if match is None and legacy is None:
+                continue
+            try:
+                if candidate.is_symlink() or (hasattr(candidate, 'is_junction') and candidate.is_junction()):
+                    continue
+                before = candidate.stat(follow_symlinks=False)
+                if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                    continue
+                owned = self._owned_path(candidate.name)
+                if owned != candidate or owned.parent != self.directory.resolve(strict=True):
+                    continue
+                capture_id = str(UUID((match or legacy)['id']))
+                created_at = (datetime.strptime(match['stamp'], '%Y%m%d_%H%M%S_%f').replace(tzinfo=timezone.utc)
+                              if match else datetime.fromtimestamp(before.st_mtime, tz=timezone.utc))
+                source = match['source'] if match else '복구된 캡처'
+                with Image.open(owned) as image:
+                    if image.format != 'PNG':
+                        continue
+                    width, height = image.size
+                    if width <= 0 or height <= 0 or (Image.MAX_IMAGE_PIXELS and width * height > Image.MAX_IMAGE_PIXELS):
+                        continue
+                    image.verify()
+                with Image.open(owned) as image:
+                    image.load()
+                byte_size, digest = _file_metadata(owned)
+                after = candidate.stat(follow_symlinks=False)
+                identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+                if (identity(before) != identity(after) or not stat.S_ISREG(after.st_mode)
+                        or after.st_nlink != 1 or candidate.is_symlink() or self._owned_path(candidate.name) != owned):
+                    continue
+                with self._connection() as connection:
+                    connection.execute('BEGIN IMMEDIATE')
+                    # Recheck under the writer lock: a normal save/recovery may
+                    # have committed after the initial directory snapshot.
+                    cursor = connection.execute(
+                        """INSERT OR IGNORE INTO capture_items
+                        (id,storage_name,source,width,height,byte_size,content_sha256,
+                         ocr_status,ocr_text,ocr_error,ocr_profile,created_at,updated_at,trashed_at)
+                        VALUES (?,?,?,?,?,?,?,'unread','','','',?,?,NULL)""",
+                        (capture_id, owned.name, source, width, height, byte_size, digest,
+                         _datetime_to_text(created_at), _datetime_to_text(_utc_now())))
+                    inserted = cursor.rowcount
+                recovered += inserted
+            except (OSError, sqlite3.Error, ValueError, RuntimeError, SyntaxError, EOFError, Image.DecompressionBombError):
+                # Recovery must not hide healthy entries because one orphan is
+                # damaged/locked. No source path or content is logged here.
+                continue
+        return recovered
 
     def list_recent(self) -> list[CaptureRecord]:
         return self.search(link_filter="all", trashed=False)
@@ -247,6 +327,8 @@ class CaptureStore:
             not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0
         ):
             raise ValueError("limit must be a positive integer or None")
+
+        self.recover_orphans()
 
         clauses = ["c.trashed_at IS NOT NULL" if trashed else "c.trashed_at IS NULL"]
         parameters: list[object] = []
@@ -723,7 +805,16 @@ class CaptureStore:
                     """
                 )
             elif version == 1:
+                connection.execute('BEGIN IMMEDIATE')
+                # Another process can finish an upgrade before this writer lock.
+                current_version = connection.execute('PRAGMA user_version').fetchone()[0]
+                if current_version == METADATA_SCHEMA_VERSION:
+                    self._validate_schema(connection)
+                    return
+                if current_version != 1:
+                    raise RuntimeError('capture metadata version changed before upgrade')
                 self._validate_schema(connection, version=1)
+                self._backup_before_upgrade()
                 connection.execute(
                     "ALTER TABLE capture_items "
                     "ADD COLUMN verified_text TEXT NOT NULL DEFAULT ''"
@@ -739,6 +830,17 @@ class CaptureStore:
                 self._validate_schema(connection)
             else:
                 self._validate_schema(connection)
+
+    def _backup_before_upgrade(self) -> Path:
+        """SQLite-consistent backup, completed before any v1 ALTER statement."""
+        backup = self.db_path.with_name(self.db_path.name + '.before-capture-inbox-' + uuid4().hex[:12] + '.bak')
+        pending = backup.with_suffix(backup.suffix + '.pending')
+        # A separate read connection works while the upgrade connection holds
+        # BEGIN IMMEDIATE; backing up that write connection itself can block.
+        with closing(sqlite3.connect(self.db_path)) as source, closing(sqlite3.connect(pending)) as destination:
+            source.backup(destination)
+        pending.replace(backup)
+        return backup
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(str(self.db_path), timeout=5.0)

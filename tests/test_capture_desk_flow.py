@@ -207,6 +207,24 @@ class CaptureDeskFlowTests(unittest.TestCase):
         self.assertTrue(self.app.flush_edits())
         self.assertEqual(self.library.capture_store.get(page['capture_id']).effective_text, '교사 수정본')
 
+    def test_reread_keeps_first_transcript_separate_from_latest_and_edited_text(self):
+        page = self.capture(mode='자동 인식', consent=True)
+        self.finish('처음 인식한 합성 원문')
+        self.edit_source('교사 수정본')
+        self.assertTrue(self.app.flush_edits())
+        self.choose.return_value = make_image_snapshot(self.image)
+        self.app.read_current_page()
+        self.finish('다시 인식한 합성 원문')
+        self.assertEqual(self.library.initial_ocr(page['id']), '처음 인식한 합성 원문')
+        self.assertEqual(self.app.page['ocr_text'], '다시 인식한 합성 원문')
+        self.assertEqual(self.app.source_editor.get('1.0', 'end-1c'), '교사 수정본')
+        with patch.object(self.app, '_readonly_view') as view:
+            self.app.show_original_text()
+        shown = view.call_args.args[1]
+        self.assertIn('처음 인식한 합성 원문', shown)
+        self.assertIn('다시 인식한 합성 원문', shown)
+        self.assertEqual(self.library.capture_store.get(page['capture_id']).effective_text, '교사 수정본')
+
     def test_failed_ocr_keeps_successful_ocr_and_unsaved_editor_can_save(self):
         page = self.capture()
         self.library.capture_store.update_ocr(page['capture_id'], '이전 성공 OCR')

@@ -15,13 +15,12 @@ def _enable_windows_dpi_awareness() -> None:
             pass
 
 
-_enable_windows_dpi_awareness()
-
-from ui.app import SsoklyApp
+from ui.capture_desk import CaptureDeskApp
 
 
 def main() -> None:
-    app = SsoklyApp()
+    _enable_windows_dpi_awareness()
+    app = CaptureDeskApp()
     app.mainloop()
 
 

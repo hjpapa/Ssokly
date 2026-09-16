@@ -139,6 +139,16 @@ class DeskWidgetTests(unittest.TestCase):
         self.assertIsNot(first, cache.get(path, (80, 60)))
         self.assertEqual(len(cache), 1)
 
+    def test_corrupt_png_decoder_errors_do_not_break_library_or_viewer(self):
+        path = self.image_file()
+        view = ZoomImageView(self.root)
+        cache = ThumbnailCache(self.root)
+        for error in (SyntaxError('synthetic PNG checksum'), EOFError('synthetic truncated PNG')):
+            with self.subTest(error=type(error).__name__), patch('ui.desk_widgets.Image.open', side_effect=error):
+                self.assertIsNone(cache.get(path))
+                self.assertFalse(view.load_path(path))
+                self.assertIsNone(view.image_size)
+
     def test_thumbnail_lru_bound_missing_file_and_clear(self):
         cache = ThumbnailCache(self.root, max_items=2)
         paths = [self.image_file(f'synthetic-{i}.png', (20, 10)) for i in range(3)]

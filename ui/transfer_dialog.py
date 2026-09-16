@@ -15,6 +15,7 @@ from services.transfer_policy import (
 def choose_transfer(parent, *, kind: str, text: str = "", image=None,
                     path: Path | str | None = None,
                     previous: TransferPolicy | None = None,
+                    image_previous: TransferPolicy | None = None,
                     title: str = "AI 전송 대상 확인") -> TransferSnapshot | None:
     """Return only an explicitly approved immutable copy, or None on cancel.
 
@@ -22,14 +23,18 @@ def choose_transfer(parent, *, kind: str, text: str = "", image=None,
     a selected page image; it never pretends that the original file was masked.
     """
     dialog = TransferDialog(parent, kind=kind, text=text, image=image, path=path,
-                            previous=previous, title=title)
+                            previous=previous, image_previous=image_previous, title=title)
     parent.wait_window(dialog.window)
     return dialog.result
 
 
 class TransferDialog:
     def __init__(self, parent, *, kind: str, text: str = "", image=None,
-                 path=None, previous=None, title="AI 전송 대상 확인"):
+                 path=None, previous=None, image_previous=None, title="AI 전송 대상 확인"):
+        # A drawing-only hint must not accidentally remove even its own scope
+        # if a caller omitted previous. A supplied combined restriction wins.
+        if image_previous is not None and image_previous.redacted and (previous is None or not previous.redacted):
+            previous = image_previous
         self.parent, self.kind, self.original_text = parent, kind, text
         self.path, self.previous = Path(path) if path is not None else None, previous
         self.original_image = image
@@ -92,11 +97,12 @@ class TransferDialog:
                 raise ValueError("전송할 이미지가 없습니다.")
             # Same normalized, metadata-free pixels will be used for drawing.
             self.original_image = make_image_snapshot(image).as_image()
-            if previous is not None and previous.image_rectangles:
+            image_policy = image_previous if image_previous is not None else previous
+            if image_policy is not None and image_policy.image_rectangles:
                 try:
-                    restore_image_snapshot(self.original_image, previous)
-                    self.rectangles = list(previous.image_rectangles)
-                    self.note.set("이전에 승인한 가림 범위를 복원했습니다. '가리고 분석'에서 그대로 확인하거나 추가로 가릴 수 있습니다.")
+                    restore_image_snapshot(self.original_image, image_policy)
+                    self.rectangles = list(image_policy.image_rectangles)
+                    self.note.set("이전 이미지 가림 위치를 복원했습니다. '가리고 분석'에서 확인하거나 추가로 가릴 수 있습니다. 문서의 전송 범위는 별도로 확인합니다.")
                 except ValueError:
                     self.note.set("원본 이미지가 바뀌어 이전 가림 위치를 재사용하지 않았습니다. 필요한 영역을 다시 선택해 주세요.")
             self._show_image()

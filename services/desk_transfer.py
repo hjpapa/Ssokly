@@ -4,7 +4,7 @@ from hashlib import sha256
 
 from services.transfer_policy import (
     ScopeExpansionRequired, TransferPolicy, TransferSnapshot, is_scope_reduction,
-    make_image_snapshot,
+    make_image_snapshot, restore_image_snapshot,
 )
 
 
@@ -89,8 +89,17 @@ class DeskTransfer:
         if auto_allowed and not force_mask and not (previous and previous.redacted) and unchanged_image:
             selected = candidate
         else:
+            restore_options = {}
+            if old_capture is not None and old_capture.redacted and old_capture.image_rectangles:
+                try:
+                    # Drawing hints do not replace the combined privacy scope.
+                    # Restore only the actual capture policy on identical pixels.
+                    restore_image_snapshot(candidate.as_image(), old_capture)
+                    restore_options['image_previous'] = old_capture
+                except ValueError:
+                    pass
             selected = choose(kind='image', image=candidate.as_image(), previous=previous,
-                              title='캡처 AI 전송 대상 확인')
+                              title='캡처 AI 전송 대상 확인', **restore_options)
             if selected is None:
                 return None
         _check_snapshot(selected, 'image', force_mask=force_mask)

@@ -444,6 +444,27 @@ class DocumentLibrary:
             row = db.execute('SELECT value_json FROM settings WHERE key=?', (_text(key),)).fetchone()
             return json.loads(row[0]) if row else default
 
+    def remember_initial_ocr(self, page_id, text):
+        """Keep the first supplied OCR verbatim, including an intentional empty."""
+        page_id, text = _text(page_id), _text(text)
+        key = 'initial_ocr:' + page_id
+        with self._db(write=True) as db:
+            page = db.execute('SELECT document_id FROM pages WHERE id=?', (page_id,)).fetchone()
+            if page is None:
+                raise LibraryReadOnlyError('기존 페이지는 읽기 전용입니다. 새 문서로 담은 뒤 기록해 주세요.')
+            self._managed(db, page['document_id'])
+            db.execute('INSERT OR IGNORE INTO settings VALUES (?,?)', (key, json.dumps(text, ensure_ascii=False)))
+            saved = json.loads(db.execute('SELECT value_json FROM settings WHERE key=?', (key,)).fetchone()[0])
+            if not isinstance(saved, str):
+                raise ValueError('최초 인식 기록을 확인할 수 없습니다. 기존 기록은 유지했습니다.')
+        return saved
+
+    def initial_ocr(self, page_id):
+        value = self.get_setting('initial_ocr:' + _text(page_id))
+        if value is not None and not isinstance(value, str):
+            raise ValueError('최초 인식 기록을 확인할 수 없습니다. 기존 기록은 유지했습니다.')
+        return value
+
     def set_setting(self, key, value):
         key = _title(key)
         serialized = json.dumps(value, ensure_ascii=False)

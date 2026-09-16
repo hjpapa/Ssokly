@@ -77,8 +77,19 @@ class DeskTransferTests(unittest.TestCase):
         self.assertTrue(previous.redacted)
         self.assertFalse(previous.image_rectangles)
         self.assertFalse(previous.approved_text)
+        self.assertEqual(choose.call_args.kwargs['image_previous'], self.masked.policy)
         with self.assertRaises(ScopeExpansionRequired):
             previous.guard_text('SYNTHETIC_SECRET', strict=False)
+
+    def test_changed_capture_never_restores_old_coordinate_hint(self):
+        self.store.save('capture:one', self.masked.policy)
+        self.store.save('document:old', make_text_snapshot('safe', excluded_strings=['SYNTHETIC_SECRET']).policy)
+        choose = Mock(return_value=None)
+        changed = Image.new('RGB', self.image.size, 'white')
+        self.desk.image_snapshot('one', changed, auto_allowed=True, document_ids=['old'], choose=choose)
+        self.assertTrue(choose.call_args.kwargs['previous'].redacted)
+        self.assertNotIn('image_previous', choose.call_args.kwargs)
+        self.assertEqual(self.store.get('capture:one'), self.masked.policy)
 
     def test_force_mask_never_silently_sends_unredacted_image(self):
         choose = Mock(return_value=make_image_snapshot(self.image))
