@@ -52,7 +52,11 @@ python -m venv .venv
 
 콘솔 없이 실행하려면 `.venv\Scripts\pythonw.exe main.py`를 사용합니다. `main.py`는 새 캡처 중심 화면을 엽니다.
 
-AI를 쓰려면 `.env.example`을 참고해 저장소 루트의 `.env`에 `OPENAI_API_KEY`를 설정합니다. 기존 키는 그대로 사용하며 덮어쓰지 마세요. 키 없이도 보관·편집·검색·복사·로컬 파일 읽기를 사용할 수 있습니다. OCR과 AI 정리는 `gpt-5-nano`로 자동 지정합니다. 예전 분석·이미지 모델 설정은 새 기본 화면에 사용하지 않습니다.
+현재 앱은 `ai-server.json`의 테스트 서버를 통해 OCR·AI 정리를 사용합니다. **사용자 로그인이나 로컬 OpenAI 키가 필요하지 않습니다.** 선택한 전송 사본이 Vercel 중계 서버를 거쳐 OpenAI로 전달되고, 키는 서버 환경변수에만 보관됩니다. 서버 모드에서는 로컬 `.env`의 키를 읽거나 전송하지 않으며 실패해도 직접 호출로 전환하지 않습니다. 보관·편집·검색·복사·로컬 문서 읽기는 계속 PC에서 처리합니다.
+
+개발자가 직접 호출을 시험할 때만 `SSOKLY_API_URL`을 빈 문자열로 설정하거나 `ai-server.json`의 URL을 비운 뒤 로컬 `.env`에 키를 설정합니다. 기존 개발 키는 보존하되 **작업 폴더 전체를 제출하지 마세요.** `python tools/build_submission.py --url https://ssokly-ai-relay.vercel.app`로 생성한 `dist/Ssokly-submission.zip`은 키·가상환경·사용자 자료를 제외한 소스 제출본입니다. EXE는 별도 패키징이 필요하며 `ai-server.json`을 EXE 옆에 둡니다. 자세한 운영 방법은 [백엔드 안내](backend/README.md)를 참고하세요.
+
+서버 모드는 완성된 결과를 한 번에 표시합니다. 전송 사본은 4MB, AI 텍스트 입력은 10만 자까지이며 큰 이미지는 영역을 나눠 캡처하세요. 테스트 서버를 중지하면 AI 기능만 사용할 수 없고 로컬 자료는 유지됩니다. OCR과 AI 정리는 `gpt-5-nano`로 지정합니다. 예전 카드 분석·이미지 생성은 이번 중계 대상이 아닙니다.
 
 ## 기본 흐름
 

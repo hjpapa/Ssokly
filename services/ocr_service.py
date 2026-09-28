@@ -185,6 +185,17 @@ def extract_text_from_image(
             raise ValueError("OCR로 읽을 이미지가 없습니다.")
         return ""
 
+    from services.ai_relay import server_url, request_relay, RelayError
+    try:
+        if server_url():
+            return request_relay({'operation': 'ocr',
+                                  'image': _image_to_data_url(_prepare_image_for_model(image)),
+                                  'detail': _ocr_detail(detail)})
+    except RelayError as error:
+        if raise_errors:
+            raise
+        return str(error)
+
     api_key, model = _load_openai_settings()
     model = model_override or model
     if not api_key or api_key == "your_api_key_here":
@@ -259,6 +270,12 @@ def extract_text_from_file(
     filename: Optional[str] = None,
 ) -> str:
     """Extract text from an OpenAI-supported document using an input_file item."""
+    from services.ai_relay import server_url, RelayError
+    if server_url():
+        message = '서버 모드에서는 파일 열기로 문서를 다시 가져온 뒤 필요한 페이지에서 다시 읽기를 사용하세요.'
+        if raise_errors:
+            raise RelayError(message)
+        return message
     api_key, model = _load_openai_settings()
     if not api_key or api_key == "your_api_key_here":
         if raise_errors:

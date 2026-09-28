@@ -4,6 +4,20 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## Vercel 중계·키 없는 제출 — 2026-09-28 / 11
+
+- 제출 제외 규칙과 테스트의 서버 주소 격리 보완 후 최종 서비스 집중 **33개 통과**, 1.922초. `dist/Ssokly-submission.zip` **56개 파일** 생성: 실제 개발 키 바이트 불포함, `.env`/가상환경/사용자 자료 제외, Python 3.9 구문 및 압축 해제 후 서비스 import·배포 주소 로드 확인. 소스 제출본이며 EXE 아님. 공백 검사 통과.
+
+- 실제 URL/마지막 전송 문구 수정 후 `python -m unittest tests.test_ai_relay tests.test_capture_desk_layout tests.test_desk_transfer -q`: **41개 통과**, 23.448초. Python 3.9 AST **111개 파일** 통과. 테스트 패키지는 배포 주소를 자동 선택하지 않도록 서버 URL을 비우며, 중계 검사는 mock 주소만 명시한다.
+
+- 초기 `python -m unittest tests.test_ai_relay tests.test_text_actions tests.test_capture_pipeline -q`: **33개 통과**, 0.999초. `node --test backend/test/ai.test.js`: **5개 통과**. 합성/mock이며 실제 API 없음.
+- `python tools/verify_capture_desk.py --all`: **677개 통과**, 232.612초. 실패/오류/건너뜀/통신 시도 0. 마지막 URL 타입 검사·실제 기본 URL·화면 안내 변경 전 검사이며 최종 집중 결과는 아래에 기록. 기존 Tk 종료 ThemeChanged 경고 남음.
+- 검증 항목: 키/인증 헤더 클라이언트 미전송, 서버 모드 로컬 키 로더·OpenAI SDK 미호출, 취소 후 결과 미적용, 서버 실패·리디렉션·미완성 응답 차단, 자동 재시도/fallback 없음, 고정 모델/프롬프트·외부 이미지 URL·추가 옵션 거부, 서버 중지와 오류 상세 비노출. 서버 프롬프트와 앱 프롬프트 일치 검사 포함.
+- 공개 배포 `https://ssokly-ai-relay.vercel.app`에서 로그인 없이 잘못된 POST는 400 JSON. 기존 키를 서버 Secret으로 등록했으며 로컬 키/로그/자료 폴더를 배포하지 않음.
+- `python tools/measure_relay.py --url https://ssokly-ai-relay.vercel.app --live`: 실제 합성 OCR 3회. 직접 **3.968초**, 중계 **4.559초 / 2.496초**. 중계 서버 내 OpenAI 구간 **3.787초 / 1.730초**, 그 외 클라이언트/전송/중계 구간 **0.772초 / 0.766초**. 날짜·학년·무료 조건 검사 통과. 첫 측정 이전 서버 연결 확인을 했으므로 cold start 수치가 아니며, 모델 응답 편차가 있어 전체 시간 차이만으로 중계 비용을 산정하지 않음.
+- 실제 `generate_text_action`을 키 환경변수 없이, dotenv 접근을 예외로 막은 채 호출: 합성 요약 **3.606초**, 학년·날짜·무료 조건 유지. 이번 총 실제 API **4회**. 원문/결과는 합성만 사용, OCR 상세 결과는 무시되는 `.local-results`에 보관.
+- 한계: 소수 표본, 부하/모든 네트워크/실제 cold start/EXE 미검증. 서버 모드는 완료 결과만 표시. 서버 키 보호와 공개 URL의 호출 남용 방지는 별개이며 이번에는 로그인·전역 요청 한도를 구현하지 않음.
+
 ## 파일 열기 21개 확장자 — 2026-09-28 / 10
 
 - Python 3.9 AST 106개 파일·공백 검사 통과.

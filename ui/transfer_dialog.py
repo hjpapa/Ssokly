@@ -54,7 +54,7 @@ class TransferDialog:
         self.window.bind("<Escape>", lambda _event: self.cancel())
         body = ttk.Frame(self.window, padding=14)
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text="선택한 사본만 OpenAI API에 전송됩니다. 비용이 발생할 수 있습니다.",
+        ttk.Label(body, text="선택한 사본만 AI로 전송됩니다. 서버 모드에서는 중계 서버를 거쳐 OpenAI에 전달됩니다. 비용이 발생할 수 있습니다.",
                   wraplength=810).pack(anchor="w")
         ttk.Label(body, text="원본은 PC에 보존됩니다. 가림은 학교의 외부 AI 이용 기준을 대신 판단하지 않습니다.",
                   wraplength=810).pack(anchor="w", pady=(2, 8))

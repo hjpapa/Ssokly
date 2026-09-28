@@ -24,6 +24,7 @@ SUITES = (
     'tests.test_main_entrypoint',
     'tests.test_capture_location',
     'tests.test_file_import',
+    'tests.test_ai_relay',
     'tests.test_library_management',
     'tests.test_library_trash',
     'tests.test_capture_manager',
@@ -79,6 +80,7 @@ def run_gate(all_tests=False):
         guards.enter_context(patch.dict(os.environ, {
             'LOCALAPPDATA': directory, 'APPDATA': directory,
             'OPENAI_API_KEY': 'synthetic-offline-gate-key',
+            'SSOKLY_API_URL': '',
         }))
         # Prevent project .env reads as well as the default user-data fallback.
         guards.enter_context(patch.object(dotenv, 'load_dotenv', return_value=False))

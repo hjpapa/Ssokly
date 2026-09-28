@@ -117,7 +117,7 @@ class CaptureDeskApp(tk.Tk):
                               width=12, state='readonly')
         picker.pack(side='left', padx=7)
         picker.bind('<<ComboboxSelected>>', self._capture_mode_changed)
-        self._transfer_hint = ttk.Label(options, text='이미지는 먼저 PC에 보관 · AI 실행 시 OpenAI 전송', foreground='#667085')
+        self._transfer_hint = ttk.Label(options, text='이미지는 PC에 보관 · AI 실행 시 서버를 통해 OpenAI 전송', foreground='#667085')
         self._transfer_hint.pack(side='left')
         self.cancel_button = ttk.Button(options, text='처리 취소', command=self.cancel_jobs)
         self.cancel_button.pack(side='right')
@@ -1293,7 +1293,7 @@ class CaptureDeskApp(tk.Tk):
         try:
             if mode == '자동 인식' and self.library.get_setting('automatic_ocr_consent', False) is not True:
                 approved = messagebox.askyesno('자동 OCR 설정',
-                    '앞으로 새로 캡처한 이미지가 자동으로 OpenAI API에 전송되고 비용이 발생합니다.\n'
+                    '앞으로 새로 캡처한 이미지가 자동으로 OpenAI API에 전송되고 비용이 발생합니다. 서버 모드에서는 중계 서버를 거칩니다.\n'
                     '기관의 외부 AI 이용 기준을 확인해 주세요. 민감한 자료는 캡처 전에 보관만 또는 가리고 읽기를 선택하세요.\n\n자동 인식을 켤까요?', parent=self)
                 if not approved:
                     self.capture_mode.set('보관만')

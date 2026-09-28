@@ -63,6 +63,19 @@ def _public_text(text):
     return '\n\n'.join(parts)
 
 
+def build_instructions(mode, audience):
+    public = audience != '교직원'
+    instructions = INSTRUCTIONS + '\n' + MODE_INSTRUCTIONS[mode] + '\n수신 대상: ' + audience
+    if public:
+        instructions += ('\n학생·학부모가 알아야 할 내용만 사용한다. 교직원의 결재·명단 취합·내부 제출·보고·내부 연락처를 안내하지 않는다.'
+                         ' 학부모 안내 근거가 없으면 그 사실을 간결하게 알린다. 이름·연락처·식별번호 등 개인정보는 포함하지 않는다.')
+    if mode == '안내문' and audience == '가정통신문':
+        instructions += '\n제목, 인사말, 번호를 붙인 핵심 안내, 협조 사항 순서로 쓴다. 원문에 없는 발행 정보·문의처는 만들지 않는다.'
+    elif mode == '안내문':
+        instructions += '\n메신저에 붙여넣기 좋은 인사말과 핵심 안내 3~6줄로 쓴다.'
+    return instructions
+
+
 def generate_text_action(text, mode='요약', audience='교직원', *, on_preview=None, cancel_event=None):
     """Return a completed plain-text result; previews are never final results.
 
@@ -80,14 +93,20 @@ def generate_text_action(text, mode='요약', audience='교직원', *, on_previe
 
     check_cancel()
     public = audience != '교직원'
-    instructions = INSTRUCTIONS + '\n' + MODE_INSTRUCTIONS[mode] + '\n수신 대상: ' + audience
-    if public:
-        instructions += ('\n학생·학부모가 알아야 할 내용만 사용한다. 교직원의 결재·명단 취합·내부 제출·보고·내부 연락처를 안내하지 않는다.'
-                         ' 학부모 안내 근거가 없으면 그 사실을 간결하게 알린다. 이름·연락처·식별번호 등 개인정보는 포함하지 않는다.')
-    if mode == '안내문' and audience == '가정통신문':
-        instructions += '\n제목, 인사말, 번호를 붙인 핵심 안내, 협조 사항 순서로 쓴다. 원문에 없는 발행 정보·문의처는 만들지 않는다.'
-    elif mode == '안내문':
-        instructions += '\n메신저에 붙여넣기 좋은 인사말과 핵심 안내 3~6줄로 쓴다.'
+    from services.ai_relay import server_url, request_relay, RelayError
+    try:
+        if server_url():
+            result = request_relay({'operation': 'text', 'text': text, 'mode': mode, 'audience': audience})
+            check_cancel()
+            if public:
+                result = _public_text(result)
+            if on_preview:
+                on_preview(result)
+            check_cancel()
+            return result
+    except RelayError as error:
+        raise TextActionError(str(error)) from None
+    instructions = build_instructions(mode, audience)
     try:
         load_dotenv(ENV_PATH)
         key = os.getenv('OPENAI_API_KEY', '').strip()
