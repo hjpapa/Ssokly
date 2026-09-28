@@ -518,6 +518,24 @@ class DocumentLibrary:
             saved = self._pages(db, document_id)
         return saved
 
+    def create_imported_document(self, title, entries, source_path):
+        """Publish prepared file pages together; failed images remain recoverable."""
+        if not entries:
+            raise ValueError('가져올 페이지가 없습니다.')
+        with self._db(write=True) as db:
+            document = self._create_document(db, _title(title))
+            for index, entry in enumerate(entries):
+                if entry['capture_id']:
+                    page = self._add_capture(db, document['id'], entry['capture_id'])
+                    db.execute('UPDATE pages SET source_name=?,source_path=? WHERE id=?',
+                               (entry['name'], source_path, page['id']))
+                else:
+                    stamp = _stamp()
+                    db.execute('INSERT INTO pages(id,document_id,capture_id,text,source_name,source_path,position,updated_at,ocr_text,edited) VALUES (?,?,NULL,?,?,?,?,?,?,0)',
+                               (uuid4().hex, document['id'], entry['text'], entry['name'], source_path, index, stamp, entry['text']))
+            self._touch(db, document['id'])
+        return self.get_document(document['id'])
+
     def set_page_trash(self, page_id, trashed, *, expected_updated_at):
         """Hide only this document's page; retain its image, text and order."""
         with self._db(write=True) as db:

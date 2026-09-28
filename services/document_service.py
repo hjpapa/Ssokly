@@ -6,6 +6,9 @@ from xml.etree import ElementTree
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html"}
+LOCAL_DOCUMENT_EXTENSIONS = {'.pdf', '.hwpx', '.docx', '.pptx', '.xlsx', '.rtf', '.odt', '.odp', '.ods'}
+LEGACY_DOCUMENT_EXTENSIONS = {'.hwp', '.doc', '.ppt', '.xls'}
+SUPPORTED_FILE_EXTENSIONS = IMAGE_EXTENSIONS | TEXT_EXTENSIONS | LOCAL_DOCUMENT_EXTENSIONS
 OPENAI_DOCUMENT_MIME_TYPES = {
     ".pdf": "application/pdf",
     ".doc": "application/msword",
@@ -41,9 +44,12 @@ def mime_type_for(path: Path) -> str:
 
 
 def read_text_file(path: Path) -> str:
-    for encoding in ("utf-8-sig", "cp949", "utf-8"):
+    data = path.read_bytes()
+    if data.startswith((b'\xff\xfe', b'\xfe\xff')):
+        return data.decode('utf-16')
+    for encoding in ("utf-8-sig", "cp949"):
         try:
-            return path.read_text(encoding=encoding)
+            return data.decode(encoding)
         except UnicodeDecodeError:
             continue
     raise UnicodeDecodeError("unknown", b"", 0, 1, "지원하지 않는 텍스트 인코딩입니다.")
@@ -51,6 +57,8 @@ def read_text_file(path: Path) -> str:
 
 def read_hwpx_file(path: Path) -> str:
     with zipfile.ZipFile(path) as archive:
+        if sum(item.file_size for item in archive.infolist()) > 128 * 1024 * 1024:
+            raise ValueError('HWPX 압축 해제 크기가 128MB를 초과합니다.')
         sections = {}
         for name in archive.namelist():
             if not (name.startswith('Contents/section') and name.endswith('.xml')):

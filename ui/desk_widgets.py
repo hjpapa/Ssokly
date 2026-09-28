@@ -58,6 +58,7 @@ class ZoomImageView(ttk.Frame):
         self.horizontal.grid(row=2, column=0, sticky='ew')
         self.canvas.configure(xscrollcommand=self.horizontal.set, yscrollcommand=self.vertical.set)
         self._image_item = self.canvas.create_image(0, 0, anchor=tk.NW)
+        self._empty_item = self.canvas.create_text(0, 0, text='', fill='#506670', justify='center', font=('Malgun Gothic', 10))
         self.canvas.bind('<Configure>', self._on_resize)
         self.canvas.bind('<Map>', self._on_resize)
         self.canvas.bind('<ButtonPress-1>', self._pan_start)
@@ -87,6 +88,7 @@ class ZoomImageView(ttk.Frame):
         if self._image is not None:
             self._image.close()
         self._image = owned
+        self.canvas.itemconfigure(self._empty_item, text='')
         self._photo = None
         self.canvas.itemconfigure(self._image_item, image='')
         self.canvas.xview_moveto(0)
@@ -159,6 +161,9 @@ class ZoomImageView(ttk.Frame):
 
     def _render(self):
         if self._image is None:
+            width, height = self._viewport()
+            self.canvas.coords(self._empty_item, width / 2, height / 2)
+            self.canvas.itemconfigure(self._empty_item, width=max(100, width - 35))
             return
         self._set_scrollregion()
         width, height = self._viewport()
@@ -185,13 +190,20 @@ class ZoomImageView(ttk.Frame):
         mode = '맞춤 · ' if self.fit_mode else ''
         self.status.set(f'{mode}{self.scale:.0%} · {self._image.width} × {self._image.height}')
 
+    def show_empty_message(self, text):
+        if self._image is None:
+            self.canvas.itemconfigure(self._empty_item, text=text)
+            self._render()
+
     def _on_resize(self, _event):
         if self._pending_render is None:
             self._pending_render = self.winfo_toplevel().after_idle(self._resize_render)
 
     def _resize_render(self):
         self._pending_render = None
-        if self.fit_mode:
+        if self._image is None:
+            self._render()
+        elif self.fit_mode:
             self.fit()
         else:
             self._render()

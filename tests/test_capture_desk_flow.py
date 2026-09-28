@@ -111,7 +111,7 @@ class CaptureDeskFlowTests(unittest.TestCase):
         selected = TransferSnapshot('file', TransferPolicy('synthetic-file', 'file'),
                                     file_bytes=b'%PDF-safe-selected-copy', file_name='safe.pdf')
         self.choose.return_value = selected
-        self.app.import_file(path)
+        self.app._read_file(self.legacy_file_page(path))
         self.choose.assert_called_once()
         self.assertEqual(self.choose.call_args.kwargs['kind'], 'file')
         self.finish()
@@ -124,16 +124,23 @@ class CaptureDeskFlowTests(unittest.TestCase):
 
     def test_file_to_redacted_text_never_calls_file_or_image_api(self):
         self.choose.return_value = make_text_snapshot('공개 전송 사본', excluded_strings=['SYNTHETIC_SECRET'])
-        self.app.import_file(self.directory / 'synthetic.pdf')
+        self.app._read_file(self.legacy_file_page(self.directory / 'synthetic.pdf'))
         self.finish()
         self.file_ocr.assert_not_called()
         self.ocr.assert_not_called()
         self.assertEqual(self.app.source_editor.get('1.0', 'end-1c'), '공개 전송 사본')
 
     def test_file_choice_cancel_does_not_dispatch(self):
-        self.app.import_file(self.directory / 'synthetic.pdf')
+        self.app._read_file(self.legacy_file_page(self.directory / 'synthetic.pdf'))
         self.start.assert_not_called()
         self.file_ocr.assert_not_called()
+
+    def legacy_file_page(self, path):
+        # Old saved file references retain explicit, immutable-copy transfer.
+        doc = self.library.create_document('기존 파일 참조')
+        page = self.library.add_text_page(doc['id'], '', source_name=path.name, source_path=path)
+        self.app.open_document(doc['id'])
+        return page
 
     def test_masked_capture_dispatch_contains_opaque_pixels_only(self):
         self.choose.return_value = make_image_snapshot(self.image, rectangles=[(2, 3, 15, 12)])

@@ -4,6 +4,17 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## 파일 열기 21개 확장자 — 2026-09-28 / 10
+
+- Python 3.9 AST 106개 파일·공백 검사 통과.
+
+- Windows/Python 3.9.7, 임시 저장소·합성 파일 사용. `python -m unittest tests.test_file_import tests.test_hwpx_structure tests.test_capture_desk_flow -v`: **48개 통과**, 26.884초.
+- `python tools/verify_capture_desk.py --all`: **668개 통과**, 228.806초. 실패/오류/건너뜀/통신 시도 0. 이후 XLSX 누적 셀 제한 최종 수정은 `python -m unittest tests.test_file_import -q` **10개 통과**, 10.634초로 확인. 기존 Tk 종료 ThemeChanged 경고는 남음.
+- PNG/JPG/JPEG/BMP/WEBP, TXT/MD/CSV/TSV/JSON/XML/HTML, PDF/HWPX/DOCX/PPTX/XLSX/RTF/ODT/ODP/ODS 모두 실제 CaptureDeskApp 파일 열기 콜백에서 새 문서 생성·본문/이미지 확인. OS 파일 선택 응답은 mock이며 기본 보관만 모드에서 전송/API 작업 미호출 확인. ODF는 최소 content.xml 합성 패키지이므로 실제 편집기별 호환 시험으로 일반화하지 않음.
+- PDF 2쪽 텍스트/스캔 구분, 렌더 이미지 크기, 암호/손상 파일 거절, 101쪽 제한, HWPX 표/삽입 이미지, 텍스트 인코딩, XLSX 날짜/백분율/빈 셀/계산값 없는 수식/숨김 시트, 연결 저장 실패 시 부분 관리 문서 미게시 확인. 원본 삭제 후 저장 이미지·수정 텍스트 재열기도 확인.
+- `python tools/evaluate_file_reading.py --live`: 기존 모델/키로 합성 이미지 **2회 실제 OCR** 완료. PDF 스캔 4.580초, HWPX 삽입 이미지 1.665초. 신청 마감 10월 2일 오후 4시·행사 10월 16일 오후 2시·희망 3학년·무료 조건이 원본과 일치. PDF 2쪽 PNG 렌더를 육안 확인했고 잘림 없음. 결과는 `.local-results`에만 저장.
+- 제한: 실제 사용자 문서, 네이티브 파일 선택 조작, 모든 Office 기능/도형/그림·복잡한 읽기 순서, EXE 빌드/PDFium DLL 번들 미검증. PDF 내장 텍스트 추출은 표 칸을 TSV로 복원하지 않음. Office 원본 배치가 필요하면 PDF 사용. HWP/DOC/PPT/XLS는 직접 읽기 대신 변환 안내.
+
 ## 저장 위치·중복 코드 정리 — 2026-09-28 / 09
 
 - `python tools/verify_capture_desk.py --all`: **657개 통과**, 213.103초. 실패/오류/건너뜀/통신 시도 0. 마지막 설정 포인터 적용 순서 조정과 시작 오류 안내 검사 추가 전 수집·실행 결과이며, 해당 최종 경로는 아래 집중 15개로 재검증. 기존 Tk 종료 시 ThemeChanged 경고는 남음.

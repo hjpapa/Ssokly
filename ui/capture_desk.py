@@ -16,7 +16,9 @@ from services.app_paths import default_app_data_dir
 from services.capture_location import CaptureLocation
 from services.capture_store import CaptureStore
 from services.document_library import DocumentLibrary, LibraryConflictError
-from services.document_service import attachment_kind, mime_type_for, read_hwpx_file, read_text_file
+from services.document_service import (attachment_kind, mime_type_for, read_hwpx_file, read_text_file,
+                                      LOCAL_DOCUMENT_EXTENSIONS, LEGACY_DOCUMENT_EXTENSIONS, SUPPORTED_FILE_EXTENSIONS)
+from services.file_import import import_local_document
 from services.source_review import highlight_source
 from ui.desk_widgets import InlineTableView, ResponsivePanedWindow, ThumbnailCache, ZoomImageView
 from ui.desk_theme import apply_theme
@@ -92,6 +94,7 @@ class CaptureDeskApp(tk.Tk):
         menu.add_command(label='캡처 저장 폴더 설정', command=self.show_capture_location)
         menu.add_command(label='기존 기록 보기', command=self.show_legacy_records)
         menu.add_command(label='원래 인식 내용 보기', command=self.show_original_text)
+        menu.add_command(label='원본 문서 파일 열기', command=self.open_source_file)
         menu.add_command(label='이전 AI 결과', command=self.show_output_history)
         menu.add_command(label='저장된 최신값 다시 열기…', command=self.reload_saved)
         menu.add_separator()
@@ -433,6 +436,8 @@ class CaptureDeskApp(tk.Tk):
         self._replace(self.source_editor, self.page['text'] if self.page else '',
                       readonly=not self.page or self.page.get('readonly', False) or self.document.get('trashed', False))
         self.image_view.load_path(self.page.get('path') if self.page else None)
+        if self.page and not self.page.get('path') and str(self.page.get('source_path', '')).lower().endswith('.hwpx'):
+            self.image_view.show_empty_message('HWPX 본문과 표를 읽었습니다.\n원본 지면은 더보기 → 원본 문서 파일 열기에서 확인하세요.\n삽입 이미지는 페이지 목록에서 따로 선택할 수 있습니다.')
         self.table_view.set_text(self.page['text'] if self.page else '')
         locked = not self.page or self.page.get('readonly') or self.document.get('readonly') or self.document.get('trashed')
         self.read_button.configure(state='disabled' if locked else 'normal')
@@ -1416,7 +1421,7 @@ class CaptureDeskApp(tk.Tk):
         if not self.flush_edits():
             return
         selected = filedialog.askopenfilename(parent=self, title='이미지 또는 문서 열기', filetypes=[
-            ('지원 파일', '*.png;*.jpg;*.jpeg;*.bmp;*.webp;*.hwpx;*.txt;*.md;*.csv;*.tsv;*.pdf;*.docx;*.pptx;*.xlsx;*.doc;*.ppt;*.xls;*.rtf;*.odt;*.odp;*.ods'),
+            ('지원 파일', ';'.join('*' + suffix for suffix in sorted(SUPPORTED_FILE_EXTENSIONS))),
             ('모든 파일', '*.*')])
         if selected:
             self.import_file(Path(selected))
@@ -1427,6 +1432,23 @@ class CaptureDeskApp(tk.Tk):
         path = Path(path)
         kind = attachment_kind(path)
         try:
+            if path.suffix.lower() in LEGACY_DOCUMENT_EXTENSIONS:
+                self.status.set('구형 HWP/DOC/PPT/XLS는 직접 읽지 않습니다. HWPX/DOCX/PPTX/XLSX 또는 PDF로 저장해 열어 주세요.')
+                return
+            if path.is_file() and path.stat().st_size > 50 * 1024 * 1024:
+                raise ValueError('파일은 50MB까지 열 수 있습니다. 파일을 나눠 주세요.')
+            if path.suffix.lower() in LOCAL_DOCUMENT_EXTENSIONS:
+                self.status.set('문서의 텍스트와 이미지를 PC에서 읽고 있습니다…')
+                self.update_idletasks()
+                doc, unread = import_local_document(self.library, path)
+                self.refresh_library(doc['id'])
+                self.open_document(doc['id'])
+                self.status.set(f"로컬에서 {doc['page_count']}개 항목을 보관했습니다. 외부 전송 없음. "
+                                + (f'이미지 {unread}개는 해당 쪽에서 다시 읽기를 누르세요.' if unread else '원본과 추출 텍스트를 대조하세요.')
+                                + (' HWPX는 본문·삽입 이미지 구분이며 실제 지면 쪽 구분은 아닙니다.' if kind == 'hwpx' else ''))
+                if path.suffix.lower() not in ('.pdf', '.hwpx'):
+                    self.status.set(self.status.get() + ' 문단·표 텍스트 기준입니다. 그림·차트의 내용은 PDF로 저장해 확인하세요.')
+                return
             if kind == 'image':
                 with Image.open(path) as image:
                     page = self.accept_capture(image.copy(), source='file_' + path.stem, auto_read=False, title=path.stem)
@@ -1446,8 +1468,24 @@ class CaptureDeskApp(tk.Tk):
                 self._read_file(page)
             else:
                 self.status.set('로컬에서 읽었습니다. 외부 전송 없음.')
+        except ValueError as error:
+            self.status.set(str(error))
+            messagebox.showerror('문서 열기 실패', str(error), parent=self)
         except Exception:
             self.status.set('파일을 읽지 못했습니다. 원본 형식과 표 구조를 확인하세요. 기존 자료는 유지합니다.')
+
+    def open_source_file(self):
+        path = Path(self.page['source_path']) if self.page and self.page.get('source_path') else None
+        if path is None or not path.is_file():
+            self.status.set('원본 파일이 없습니다. 보관한 이미지와 텍스트는 계속 사용할 수 있습니다.')
+            return
+        if path.suffix.lower() not in SUPPORTED_FILE_EXTENSIONS:
+            self.status.set('이 형식은 외부 문서 프로그램으로 열지 않습니다.')
+            return
+        try:
+            os.startfile(str(path))
+        except (OSError, AttributeError):
+            self.status.set('원본 파일을 여는 프로그램을 확인하세요.')
 
     def _read_file(self, page):
         from services.ocr_service import extract_text_from_file, extract_text_from_image
@@ -1457,6 +1495,17 @@ class CaptureDeskApp(tk.Tk):
         path = Path(page['source_path'])
         kind = attachment_kind(path)
         try:
+            if path.suffix.lower() in LOCAL_DOCUMENT_EXTENSIONS - {'.pdf', '.hwpx'}:
+                from services.office_reader import read_office
+                candidates = read_office(path)
+                selected = next((entry for entry in candidates if entry['name'] == page['source_name']), None)
+                if selected is None:
+                    raise ValueError('원본 구조가 바뀌었습니다. 파일 열기로 새 문서를 가져오세요.')
+                self.library.remember_initial_ocr(page['id'], page.get('ocr_text') or selected['text'])
+                self.library.update_page_ocr(page['id'], selected['text'], expected_updated_at=page['updated_at'])
+                self._refresh_current_page(page['document_id'], page['id'])
+                self.status.set('로컬 원문을 다시 읽었습니다. 수정본은 유지합니다.')
+                return
             if kind in ('hwpx', 'text'):
                 text = read_hwpx_file(path) if kind == 'hwpx' else read_text_file(path)
                 self.library.remember_initial_ocr(page['id'], page.get('ocr_text') or text)
