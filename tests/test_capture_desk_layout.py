@@ -2,6 +2,7 @@
 from pathlib import Path
 from contextlib import closing
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,20 @@ from ui.capture_desk import CaptureDeskApp
 
 
 class CaptureDeskLayoutTests(unittest.TestCase):
+    def test_busy_strip_keeps_source_and_editor_visible(self):
+        app = self.create_app(1.67)
+        app._jobs['synthetic'] = {'kind': 'ocr', 'started': 0, 'cancel': threading.Event()}
+        app.job_progress.refresh(app._jobs, now=35)
+        for geometry in ('720x680', '1280x800'):
+            app.geometry(geometry)
+            app.update()
+            self.assert_visible(app.job_progress)
+            self.assert_visible(app.cancel_button)
+            self.assert_visible(app.image_view)
+            self.assert_visible(app.source_editor)
+            self.assertGreater(app.image_view.winfo_height(), 100)
+            self.assertGreater(app.source_editor.winfo_height(), 100)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

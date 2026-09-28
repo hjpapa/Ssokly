@@ -2,6 +2,8 @@
 import argparse
 from pathlib import Path
 import sys
+import threading
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ui.capture_desk import CaptureDeskApp
@@ -14,6 +16,8 @@ def main():
     _enable_windows_dpi_awareness()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path('.local-results/manual-desk'))
+    parser.add_argument('--busy', action='store_true', help='Show synthetic AI waiting state; no request is sent.')
+    parser.add_argument('--geometry', default='1280x800', help='Preview window size, for example 720x680.')
     args = parser.parse_args()
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -27,6 +31,10 @@ def main():
         app.accept_capture(images['notice'], auto_read=False, title='독서교실 학부모 안내')
     else:
         app.open_document(library.list_documents()[0]['id'])
+    if args.busy:
+        app._jobs['preview'] = {'kind': 'ai', 'cancel': threading.Event(), 'started': time.monotonic()}
+        app.job_progress.refresh(app._jobs)
+    app.geometry(args.geometry)
     app.mainloop()
 
 

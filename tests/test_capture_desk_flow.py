@@ -344,6 +344,52 @@ class CaptureDeskFlowTests(unittest.TestCase):
         self.assertEqual(self.app._jobs, {})
         self.ai.assert_not_called()
 
+    def test_progress_pending_cancel_and_late_response(self):
+        doc = self.text_document()
+        self.choose.return_value = make_text_snapshot(self.library.document_text(doc['id']))
+        self.start.side_effect = lambda *args: CaptureDeskApp._start_job(self.app, *args)
+        with patch('ui.capture_desk.threading.Thread') as worker:
+            self.app.generate()
+            self.app.generate()
+            worker.assert_called_once()
+        identifier, job = next(iter(self.app._jobs.items()))
+        progress = self.app.job_progress
+        self.assertEqual(progress.winfo_manager(), 'pack')
+        progress.refresh(self.app._jobs, now=job['started'] + 35)
+        self.assertIn('35초', progress.text.get())
+        self.assertIn('오래', progress.text.get())
+        self.assertNotIn('%', progress.text.get())
+        angle = progress.spinner.itemcget(progress.arc, 'start')
+        progress.refresh(self.app._jobs, now=job['started'] + 35.1)
+        self.assertNotEqual(angle, progress.spinner.itemcget(progress.arc, 'start'))
+        self.app.cancel_jobs()
+        self.assertIn('전송 종료 대기', progress.text.get())
+        self.assertTrue(progress.cancel_button.instate(['disabled']))
+        self.app._results.put((identifier, True, 'late result'))
+        self.app._poll_results()
+        self.assertEqual(self.library.outputs(doc['id']), [])
+        self.assertEqual(progress.winfo_manager(), '')
+
+    def test_progress_completion_error_and_multiple_jobs(self):
+        doc = self.text_document()
+        self.choose.return_value = make_text_snapshot(self.library.document_text(doc['id']))
+        self.app.generate()
+        identifier, job = self.latest()
+        job['started'] = 100
+        self.app._jobs['second'] = {**job, 'cancel': threading.Event()}
+        progress = self.app.job_progress
+        progress.refresh(self.app._jobs, now=165)
+        self.assertIn('2개', progress.text.get())
+        self.assertIn('1분 05초', progress.text.get())
+        self.app._results.put((identifier, False, '합성 연결 오류'))
+        self.app._poll_results()
+        self.assertEqual(progress.winfo_manager(), 'pack')
+        self.assertIn('오류', self.app.status.get())
+        self.app._results.put(('second', True, '합성 정리 완료'))
+        self.app._poll_results()
+        self.assertEqual(progress.winfo_manager(), '')
+        self.assertEqual(len(self.library.outputs(doc['id'])), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

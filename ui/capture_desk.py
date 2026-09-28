@@ -5,6 +5,7 @@ from pathlib import Path
 import queue
 import sqlite3
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 from uuid import uuid4
@@ -22,6 +23,7 @@ from services.file_import import import_local_document
 from services.source_review import highlight_source
 from ui.desk_widgets import InlineTableView, ResponsivePanedWindow, ThumbnailCache, ZoomImageView
 from ui.desk_theme import apply_theme
+from ui.job_progress import JobProgress
 
 
 def fingerprint(text):
@@ -119,8 +121,8 @@ class CaptureDeskApp(tk.Tk):
         picker.bind('<<ComboboxSelected>>', self._capture_mode_changed)
         self._transfer_hint = ttk.Label(options, text='이미지는 PC에 보관 · AI 실행 시 서버를 통해 OpenAI 전송', foreground='#667085')
         self._transfer_hint.pack(side='left')
-        self.cancel_button = ttk.Button(options, text='처리 취소', command=self.cancel_jobs)
-        self.cancel_button.pack(side='right')
+        self.job_progress = JobProgress(self, self.cancel_jobs)
+        self.cancel_button = self.job_progress.cancel_button
 
         bottom = ttk.Frame(self, padding=(12, 6))
         bottom.pack(side='bottom', fill='x')
@@ -1141,8 +1143,20 @@ class CaptureDeskApp(tk.Tk):
         if len(self.work_split.panes()) == 2:
             vertical = str(self.work_split.cget('orient')) == 'vertical'
             extent = self.work_split.winfo_height() if vertical else self.work_split.winfo_width()
-            lower = max(self._page_bar.winfo_reqheight() + 150, int(extent * .40)) if vertical else image_min
-            upper = extent - max(160, int(extent * .40)) - 7 if vertical else extent - editor_min - 7
+            if vertical:
+                # Reserve editable content as well as tabs/copy/re-read controls.
+                # A fixed 160px editor pane left only one text line while busy.
+                tab_height = max(panel.winfo_reqheight() for panel in (self.text_panel, self.table_panel, self.ai_panel))
+                chrome = (self.editor_tabs.winfo_reqheight() - tab_height
+                          + self.text_panel.winfo_reqheight() - self.source_editor.winfo_reqheight())
+                page_bar = self._page_bar.winfo_reqheight()
+                content_min = min(110, max(24, (extent - page_bar - chrome - 12) // 2))
+                editor_height = chrome + content_min
+                upper = extent - editor_height - 7
+                lower = min(max(page_bar + content_min, int(extent * .40)), upper)
+                lower = max(1, lower)
+            else:
+                lower, upper = image_min, extent - editor_min - 7
             if upper >= lower:
                 current = self.work_split.sashpos(0)
                 preferred = int(extent * (.50 if vertical else .52)) if self._reset_work_sash else current
@@ -1579,7 +1593,7 @@ class CaptureDeskApp(tk.Tk):
             raise ValueError('전송 범위가 변경되어 요청을 시작하지 않았습니다.')
         identifier = uuid4().hex
         cancel = threading.Event()
-        self._jobs[identifier] = {**metadata, 'kind': kind, 'cancel': cancel}
+        self._jobs[identifier] = {**metadata, 'kind': kind, 'cancel': cancel, 'started': time.monotonic()}
         def work():
             try:
                 if cancel.is_set():
@@ -1598,11 +1612,13 @@ class CaptureDeskApp(tk.Tk):
             self._jobs.pop(identifier, None)
             raise
         self.status.set('텍스트를 읽고 있습니다… 원본은 보관됨' if kind != 'ai' else 'AI 정리 중… 기존 결과는 유지됩니다.')
+        self.job_progress.refresh(self._jobs)
         return identifier
 
     def cancel_jobs(self):
         for metadata in self._jobs.values():
             metadata['cancel'].set()
+        self.job_progress.refresh(self._jobs)
         self.status.set('처리를 취소했습니다. 이미 전송된 요청의 비용은 발생할 수 있습니다. 원본은 유지합니다.')
 
     def _poll_results(self):
@@ -1654,6 +1670,7 @@ class CaptureDeskApp(tk.Tk):
             except Exception:
                 self.status.set('응답을 저장하지 못했습니다. 현재 입력과 원본을 유지합니다. 저장 상태를 확인하세요.')
         if not self._closing:
+            self.job_progress.refresh(self._jobs)
             self._poll_id = self.after(80, self._poll_results)
 
     def _refresh_current_page(self, document_id, page_id, previous_token=None):

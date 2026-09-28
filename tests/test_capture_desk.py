@@ -341,7 +341,8 @@ class CaptureDeskTests(unittest.TestCase):
                 self.app.editor_tabs.select(self.app.text_panel)
                 self.app.update()
                 self.assertEqual((self.app.winfo_width(), self.app.winfo_height()), expected)
-                for widget in (self.app.capture_button, self.app.add_button, self.app.cancel_button,
+                self.assertFalse(self.app.cancel_button.winfo_ismapped())
+                for widget in (self.app.capture_button, self.app.add_button,
                                self.app.title_entry, self.app.view_button, self.app.read_button):
                     with self.subTest(widget=str(widget)):
                         within_root(widget)
