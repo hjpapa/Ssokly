@@ -33,7 +33,7 @@ def build(url, output):
     entries['ai-server.json'] = json.dumps({'url': url.rstrip('/')}, indent=2).encode()
     entries['START-HERE.txt'] = ('Ssokly source submission\nInstall Python with Tk, then run:\n'
                                'python -m pip install -r requirements.txt\npython main.py\n'
-                               'AI uses the configured test server. No API key or login is needed.\n').encode()
+                               'AI uses the configured AI server. No API key or login is needed.\n').encode()
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:

@@ -61,13 +61,17 @@ class RelayTests(unittest.TestCase):
             sdk.assert_not_called()
             self.assertEqual(client.post.call_count, 1)
 
-    def test_unsafe_addresses_and_large_payload_are_rejected_locally(self):
+    def test_unsafe_addresses_are_rejected_but_large_payload_is_sent(self):
         for value in ('http://example.test', 'https://name:password@example.test', 'https://example.test/?token=x'):
             with patch.dict('os.environ', {'SSOKLY_API_URL': value}), self.assertRaises(ai_relay.RelayError):
                 ai_relay.server_url()
-        with patch('services.ai_relay.httpx.Client') as factory, self.assertRaises(ai_relay.RelayError):
-            ai_relay.request_relay({'text': 'x' * 4_000_001})
-        factory.assert_not_called()
+        with patch('services.ai_relay.httpx.Client') as factory:
+            client = factory.return_value.__enter__.return_value
+            client.post.return_value = Mock(status_code=200)
+            client.post.return_value.json.return_value = {'status': 'completed', 'text': '합성 결과'}
+            self.assertEqual(ai_relay.request_relay({'text': 'x' * 4_000_001}), '합성 결과')
+            self.assertGreater(len(client.post.call_args.kwargs['content']), 4_000_000)
+            self.assertEqual(factory.call_args.kwargs['timeout'], 300)
 
     def test_incomplete_and_http_failures_are_not_results(self):
         with patch('services.ai_relay.httpx.Client') as factory:

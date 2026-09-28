@@ -9,7 +9,6 @@ import httpx
 
 CONFIG_PATH = (Path(sys.executable).parent if getattr(sys, 'frozen', False)
                else Path(__file__).resolve().parents[1]) / 'ai-server.json'
-MAX_REQUEST_BYTES = 4_000_000
 
 
 class RelayError(RuntimeError):
@@ -42,16 +41,14 @@ def request_relay(payload):
     if not url:
         raise RelayError('AI 서버 주소를 설정해 주세요.')
     body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-    if len(body) > MAX_REQUEST_BYTES:
-        raise RelayError('전송 사본이 너무 큽니다. 필요한 영역을 나누어 캡처해 주세요. (4MB 제한)')
     try:
-        with httpx.Client(timeout=120, follow_redirects=False) as client:
+        with httpx.Client(timeout=300, follow_redirects=False) as client:
             response = client.post(url + '/api/ai', content=body,
                                    headers={'Content-Type': 'application/json'})
         if response.status_code == 413:
-            raise RelayError('전송 사본이 너무 큽니다. 필요한 영역을 나누어 캡처해 주세요.')
+            raise RelayError('Vercel의 요청·응답 크기 한도(4.5MB)를 초과했습니다. 필요한 영역을 나누어 캡처해 주세요.')
         if response.status_code == 503:
-            raise RelayError('테스트용 AI 서버가 중지되었거나 아직 설정되지 않았습니다.')
+            raise RelayError('AI 서버가 아직 설정되지 않았거나 사용할 수 없습니다.')
         if response.status_code == 429:
             raise RelayError('AI 서버가 혼잡하거나 사용 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.')
         if response.status_code != 200:

@@ -13,7 +13,7 @@ test('fixed model, no storage/tools, reject injected options and remote images',
   const request = buildRequest(body);
   assert.equal(request.model, 'gpt-5-nano');
   assert.equal(request.store, false);
-  assert.equal(request.max_output_tokens, 4000);
+  assert.equal(request.max_output_tokens, undefined);
   assert.throws(() => buildRequest({ ...body, model: 'other' }));
   assert.throws(() => buildRequest({ ...body, mode: 'unknown' }));
   assert.throws(() => buildRequest({ operation: 'ocr', image: 'https://example.test/private' }));
@@ -24,8 +24,8 @@ test('refused, incomplete, empty output never becomes a result', () => {
   assert.throws(() => completedText({ status: 'completed', output: [] }));
   assert.throws(() => completedText({ status: 'completed', output: [{ type: 'message', status: 'completed', content: [{ type: 'refusal' }] }] }));
 });
-test('handler disable switch and method block before upstream', async () => {
-  delete process.env.SSOKLY_RELAY_ENABLED;
+test('missing key and method block before upstream', async () => {
+  delete process.env.OPENAI_API_KEY;
   let res = response();
   await handler({ method: 'POST', headers: {}, body }, res);
   assert.equal(res.statusCode, 503);
@@ -34,7 +34,7 @@ test('handler disable switch and method block before upstream', async () => {
   assert.equal(res.statusCode, 405);
 });
 test('only server key goes upstream; response has text and timing, no key', async () => {
-  process.env.SSOKLY_RELAY_ENABLED = 'true';
+  delete process.env.SSOKLY_RELAY_ENABLED;
   process.env.OPENAI_API_KEY = 'synthetic-server-key';
   const original = globalThis.fetch;
   let calls = 0;
@@ -60,12 +60,14 @@ test('only server key goes upstream; response has text and timing, no key', asyn
     assert.ok(!JSON.stringify(failure).includes('synthetic-secret'));
   } finally { globalThis.fetch = original; }
 });
-test('malformed and oversized requests fail before any charge', async () => {
-  process.env.SSOKLY_RELAY_ENABLED = 'true';
+test('former size limits are removed; malformed requests still fail', async () => {
   process.env.OPENAI_API_KEY = 'synthetic-server-key';
-  const res = response();
-  await handler({ method: 'POST', headers: { 'content-type': 'application/json', 'content-length': '4000001' }, body }, res);
-  assert.equal(res.statusCode, 413);
+  const largeText = '합성'.repeat(60_000);
+  assert.equal(buildRequest({ ...body, text: largeText }).input[0].content[0].text, largeText);
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(3_050_000)]);
+  const image = 'data:image/png;base64,' + png.toString('base64');
+  assert.ok(image.length > 4_000_000);
+  assert.equal(buildRequest({ operation: 'ocr', image }).input[0].content[1].image_url, image);
   const bad = response();
   await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' }, bad);
   assert.equal(bad.statusCode, 400);
