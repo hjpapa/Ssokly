@@ -1,4 +1,6 @@
 import json
+import base64
+import hashlib
 from pathlib import Path
 import tempfile
 import threading
@@ -94,6 +96,66 @@ class RelayTests(unittest.TestCase):
     def test_server_prompts_match_desktop(self):
         from tools.export_relay_prompts import bundle, ROOT
         self.assertEqual(json.loads((ROOT / 'backend/prompts.json').read_text(encoding='utf-8')), bundle())
+
+    def large_payload(self):
+        data = b'\x89PNG\r\n\x1a\n' + b'x' * 3_100_000
+        return data, {'operation': 'ocr', 'image': 'data:image/png;base64,' + base64.b64encode(data).decode('ascii'), 'detail': 'high'}
+
+    def test_large_image_bypasses_function_body_without_changing_bytes(self):
+        data, payload = self.large_payload()
+        with patch('services.ai_relay.httpx.Client') as factory:
+            client = factory.return_value.__enter__.return_value
+            grant = Mock(status_code=200)
+            grant.json.return_value = {'upload_url': 'https://vercel.com/api/blob/?signed=synthetic', 'receipt': 'synthetic-receipt'}
+            result = Mock(status_code=200)
+            result.json.return_value = {'status': 'completed', 'text': 'large image result'}
+            client.post.side_effect = [grant, result, Mock(status_code=200)]
+            client.put.return_value = Mock(status_code=200)
+            self.assertEqual(ai_relay.request_relay(payload), 'large image result')
+            create, analyze, cleanup = client.post.call_args_list
+            self.assertEqual(create.kwargs['json']['sha256'], hashlib.sha256(data).hexdigest())
+            self.assertEqual(client.put.call_args.kwargs['content'], data)
+            self.assertEqual(client.put.call_args.kwargs['headers'], {'Content-Type': 'image/png'})
+            self.assertEqual(analyze.kwargs['json'], {'operation': 'ocr_blob', 'receipt': 'synthetic-receipt', 'detail': 'high'})
+            self.assertEqual(cleanup.kwargs['json']['action'], 'delete')
+            self.assertNotIn('synthetic-never-send', str(client.post.call_args_list))
+
+    def test_failed_upload_still_cleans_up_and_never_calls_ai(self):
+        _, payload = self.large_payload()
+        with patch('services.ai_relay.httpx.Client') as factory:
+            client = factory.return_value.__enter__.return_value
+            grant = Mock(status_code=200)
+            grant.json.return_value = {'upload_url': 'https://vercel.com/api/blob/?signed=synthetic', 'receipt': 'synthetic-receipt'}
+            client.post.side_effect = [grant, Mock(status_code=200)]
+            client.put.side_effect = RuntimeError('secret-upload-url')
+            with self.assertRaises(ai_relay.RelayError) as error:
+                ai_relay.request_relay(payload)
+            self.assertNotIn('secret-upload-url', str(error.exception))
+            self.assertTrue(all(call.args[0].endswith('/api/upload') for call in client.post.call_args_list))
+            self.assertEqual(client.post.call_args_list[-1].kwargs['json']['action'], 'delete')
+
+    def test_foreign_upload_target_is_rejected_without_transmitting_image(self):
+        _, payload = self.large_payload()
+        with patch('services.ai_relay.httpx.Client') as factory:
+            client = factory.return_value.__enter__.return_value
+            grant = Mock(status_code=200)
+            grant.json.return_value = {'upload_url': 'https://example.test/private', 'receipt': 'synthetic'}
+            client.post.side_effect = [grant, Mock(status_code=200)]
+            with self.assertRaises(ai_relay.RelayError):
+                ai_relay.request_relay(payload)
+            client.put.assert_not_called()
+
+    def test_cleanup_failure_preserves_successful_result(self):
+        _, payload = self.large_payload()
+        with patch('services.ai_relay.httpx.Client') as factory:
+            client = factory.return_value.__enter__.return_value
+            grant = Mock(status_code=200)
+            grant.json.return_value = {'upload_url': 'https://vercel.com/api/blob/?signed=synthetic', 'receipt': 'synthetic'}
+            result = Mock(status_code=200)
+            result.json.return_value = {'status': 'completed', 'text': 'completed', 'cleanup_pending': True}
+            client.post.side_effect = [grant, result, RuntimeError('cleanup unavailable')]
+            client.put.return_value = Mock(status_code=200)
+            self.assertEqual(ai_relay.request_relay(payload), 'completed')
 
     def test_submission_excludes_secrets_and_user_data(self):
         from tools.build_submission import build

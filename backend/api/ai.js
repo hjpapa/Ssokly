@@ -1,14 +1,8 @@
 import { readFileSync } from 'node:fs';
+import { readJson, reply } from '../lib/http.js';
+import { temporaryImages, verifyReceipt } from '../lib/temp-images.js';
 
 const prompts = JSON.parse(readFileSync(new URL('../prompts.json', import.meta.url), 'utf8'));
-
-function reply(res, status, body) {
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.statusCode = status;
-  res.end(JSON.stringify(body));
-}
 
 export function buildRequest(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('invalid');
@@ -54,7 +48,8 @@ export function completedText(response) {
   return text;
 }
 
-export default async function handler(req, res) {
+export function aiHandler(storage = temporaryImages()) {
+return async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return reply(res, 405, { error: 'method_not_allowed' });
@@ -66,34 +61,47 @@ export default async function handler(req, res) {
     return reply(res, 415, { error: 'json_required' });
   }
   let request;
+  let record;
+  let body;
   try {
-    let body = req.body;
-    if (body === undefined) {
-      const chunks = [];
-      for await (const chunk of req) {
-        chunks.push(Buffer.from(chunk));
-      }
-      body = Buffer.concat(chunks).toString('utf8');
-    }
-    if (Buffer.isBuffer(body)) body = body.toString('utf8');
-    request = buildRequest(typeof body === 'string' ? JSON.parse(body) : body);
+    body = await readJson(req);
+    if (body?.operation === 'ocr_blob') {
+      if (Object.keys(body).some(k => !['operation', 'receipt', 'detail'].includes(k))
+          || !['low', 'auto', 'high'].includes(body.detail ?? 'high')) throw Error('invalid');
+      record = verifyReceipt(body.receipt);
+    } else request = buildRequest(body);
   } catch {
     return reply(res, 400, { error: 'invalid_request' });
   }
-  const started = performance.now();
+  let status = 502;
+  let result = { error: 'request_failed' };
   try {
+    if (record) request = buildRequest({ operation: 'ocr', image: await storage.read(record), detail: body.detail });
+    const started = performance.now();
     const upstream = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST', headers: { 'Content-Type': 'application/json',
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
       body: JSON.stringify(request), signal: AbortSignal.timeout(285_000), redirect: 'error'
     });
-    if (!upstream.ok) return reply(res, upstream.status === 429 ? 429 : 502, { error: 'upstream_failed' });
-    const text = completedText(await upstream.json());
-    const upstreamMs = Math.round(performance.now() - started);
-    res.setHeader('Server-Timing', `openai;dur=${upstreamMs}`);
-    return reply(res, 200, { status: 'completed', text, upstream_ms: upstreamMs });
+    if (!upstream.ok) {
+      status = upstream.status === 429 ? 429 : 502;
+      result = { error: 'upstream_failed' };
+    } else {
+      const text = completedText(await upstream.json());
+      const upstreamMs = Math.round(performance.now() - started);
+      res.setHeader('Server-Timing', `processing;dur=${upstreamMs}`);
+      status = 200;
+      result = { status: 'completed', text, upstream_ms: upstreamMs };
+    }
   } catch {
     // Never return/log upstream bodies, document content, headers, or secrets.
-    return reply(res, 502, { error: 'request_failed' });
+  } finally {
+    if (record) {
+      try { await storage.remove(record); }
+      catch { result.cleanup_pending = true; }
+    }
   }
+  return reply(res, status, result);
+};
 }
+export default aiHandler();

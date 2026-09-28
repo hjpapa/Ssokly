@@ -1,5 +1,7 @@
 """Keyless desktop transport. Never forwards local credentials or retries a billable request."""
 import json
+import base64
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -9,6 +11,7 @@ import httpx
 
 CONFIG_PATH = (Path(sys.executable).parent if getattr(sys, 'frozen', False)
                else Path(__file__).resolve().parents[1]) / 'ai-server.json'
+INLINE_REQUEST_BYTES = 4_000_000  # Route threshold, not a rejection limit.
 
 
 class RelayError(RuntimeError):
@@ -43,8 +46,11 @@ def request_relay(payload):
     body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     try:
         with httpx.Client(timeout=300, follow_redirects=False) as client:
-            response = client.post(url + '/api/ai', content=body,
-                                   headers={'Content-Type': 'application/json'})
+            if payload.get('operation') == 'ocr' and len(body) > INLINE_REQUEST_BYTES:
+                response = _large_image_request(client, url, payload)
+            else:
+                response = client.post(url + '/api/ai', content=body,
+                                       headers={'Content-Type': 'application/json'})
         if response.status_code == 413:
             raise RelayError('Vercel의 요청·응답 크기 한도(4.5MB)를 초과했습니다. 필요한 영역을 나누어 캡처해 주세요.')
         if response.status_code == 503:
@@ -62,3 +68,36 @@ def request_relay(payload):
         raise
     except Exception:
         raise RelayError('AI 서버에 연결하지 못했습니다. 네트워크와 서버 주소를 확인해 주세요.') from None
+
+
+def _large_image_request(client, url, payload):
+    image = payload.get('image', '')
+    if not isinstance(image, str) or not image.startswith('data:image/png;base64,'):
+        raise RelayError('전송할 이미지 형식을 확인해 주세요.')
+    data = base64.b64decode(image.split(',', 1)[1], validate=True)
+    receipt = None
+    try:
+        issued = client.post(url + '/api/upload', json={'action': 'create', 'bytes': len(data),
+                            'sha256': hashlib.sha256(data).hexdigest()})
+        if issued.status_code != 200:
+            raise RelayError('큰 이미지 업로드를 준비하지 못했습니다. 서버 저장소 연결을 확인해 주세요.')
+        grant = issued.json()
+        receipt = grant['receipt']
+        upload_url = grant['upload_url']
+        target = urlsplit(upload_url)
+        if (target.scheme != 'https' or target.netloc != 'vercel.com' or target.path != '/api/blob/'
+                or target.username or target.password or target.fragment
+                or not isinstance(receipt, str)):
+            raise RelayError('이미지 업로드 주소를 확인하지 못했습니다.')
+        uploaded = client.put(upload_url, content=data, headers={'Content-Type': 'image/png'})
+        if uploaded.status_code not in (200, 201):
+            raise RelayError('이미지를 업로드하지 못했습니다. 연결 상태를 확인하고 다시 시도해 주세요.')
+        return client.post(url + '/api/ai', json={'operation': 'ocr_blob', 'receipt': receipt,
+                           'detail': payload.get('detail', 'high')})
+    finally:
+        if receipt:
+            try:
+                # Server also deletes before replying; repeat deletion is safe.
+                client.post(url + '/api/upload', json={'action': 'delete', 'receipt': receipt}, timeout=15)
+            except Exception:
+                pass  # Daily server cleanup covers disconnects and abandoned uploads.
