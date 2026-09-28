@@ -10,6 +10,22 @@ from PIL import Image, ImageTk
 from services.source_review import highlight_source, review_spans, source_table_blocks
 
 
+class ResponsivePanedWindow(tk.PanedWindow):
+    """Resizable two-pane surface whose orientation can change without reparenting."""
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, borderwidth=0, sashwidth=7, sashrelief='flat',
+                         background='#d8e0e5', opaqueresize=True, **kwargs)
+
+    def add(self, child, weight=1, **kwargs):
+        super().add(child, stretch='always' if weight else 'never', **kwargs)
+
+    def sashpos(self, index, position=None):
+        vertical = str(self.cget('orient')) == 'vertical'
+        if position is not None:
+            self.sash_place(index, 0 if vertical else position, position if vertical else 0)
+        return self.sash_coord(index)[1 if vertical else 0]
+
+
 class ZoomImageView(ttk.Frame):
     """One owned source image, with only its visible area rendered at zoom scale."""
 
@@ -24,12 +40,15 @@ class ZoomImageView(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         toolbar = ttk.Frame(self)
+        self.toolbar = toolbar
+        self._compact_tools = False
         toolbar.grid(row=0, column=0, columnspan=2, sticky='ew')
         for label, command in (('맞춤', self.fit), ('−', self.zoom_out),
                                ('+', self.zoom_in), ('100%', self.original_size)):
             ttk.Button(toolbar, text=label, width=5, command=command).pack(side=tk.LEFT, padx=1)
         self.status = tk.StringVar(self, '이미지를 선택하세요')
-        ttk.Label(self, textvariable=self.status).grid(row=3, column=0, columnspan=2, sticky='w')
+        self.caption = ttk.Label(self, textvariable=self.status)
+        self.caption.grid(row=3, column=0, columnspan=2, sticky='w')
         self.canvas = tk.Canvas(self, width=1, height=1, highlightthickness=0,
                                 background='#edf1f3', cursor='fleur')
         self.canvas.grid(row=1, column=0, sticky='nsew')
@@ -40,6 +59,7 @@ class ZoomImageView(ttk.Frame):
         self.canvas.configure(xscrollcommand=self.horizontal.set, yscrollcommand=self.vertical.set)
         self._image_item = self.canvas.create_image(0, 0, anchor=tk.NW)
         self.canvas.bind('<Configure>', self._on_resize)
+        self.canvas.bind('<Map>', self._on_resize)
         self.canvas.bind('<ButtonPress-1>', self._pan_start)
         self.canvas.bind('<B1-Motion>', self._pan_move)
         self.canvas.bind('<MouseWheel>', self._on_wheel)
@@ -50,6 +70,14 @@ class ZoomImageView(ttk.Frame):
     @property
     def image_size(self):
         return self._image.size if self._image is not None else None
+
+    def set_compact_tools(self, compact):
+        if self._compact_tools == compact:
+            return
+        self._compact_tools = compact
+        for widget in (self.toolbar, self.caption):
+            widget.grid_remove() if compact else widget.grid()
+        self._on_resize(None)
 
     def set_image(self, image):
         """Copy a caller-owned PIL image; replacing/clearing releases the old copy."""
@@ -70,6 +98,7 @@ class ZoomImageView(ttk.Frame):
             self.status.set('이미지를 선택하세요')
         else:
             self.fit()
+            self._on_resize(None)
 
     def load_path(self, path):
         """Load a local image only. A bad/missing path never leaves a stale preview."""
@@ -158,7 +187,7 @@ class ZoomImageView(ttk.Frame):
 
     def _on_resize(self, _event):
         if self._pending_render is None:
-            self._pending_render = self.after_idle(self._resize_render)
+            self._pending_render = self.winfo_toplevel().after_idle(self._resize_render)
 
     def _resize_render(self):
         self._pending_render = None
@@ -196,7 +225,7 @@ class ZoomImageView(ttk.Frame):
         if event.widget is not self:
             return
         if self._pending_render is not None:
-            self.after_cancel(self._pending_render)
+            self.winfo_toplevel().after_cancel(self._pending_render)
             self._pending_render = None
         if self._image is not None:
             self._image.close()
@@ -330,7 +359,7 @@ class InlineTableView(ttk.Frame):
         self.tree.delete(*self.tree.get_children())
         columns = [str(i) for i in range(max(map(len, block.rows)))]
         self.tree.configure(columns=columns)
-        table_font = tkfont.nametofont('TkDefaultFont', root=self)
+        table_font = tkfont.Font(root=self, name='TkDefaultFont', exists=True)
         for i in columns:
             column = int(i)
             self.tree.heading(i, text=f'열 {column + 1}')

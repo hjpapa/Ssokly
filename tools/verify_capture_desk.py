@@ -22,6 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 SUITES = (
     'tests.test_main_entrypoint',
+    'tests.test_library_management',
+    'tests.test_library_trash',
+    'tests.test_capture_manager',
+    'tests.test_page_organization',
     'tests.test_document_library',
     'tests.test_desk_widgets',
     'tests.test_text_actions',
@@ -49,7 +53,7 @@ LIMITS = (
 )
 
 
-def run_gate():
+def run_gate(all_tests=False):
     attempts = []
 
     def deny_network(*_args, **_kwargs):
@@ -78,7 +82,9 @@ def run_gate():
         guards.enter_context(patch.object(dotenv, 'load_dotenv', return_value=False))
         with redirect_stdout(output):
             try:
-                suite = unittest.defaultTestLoader.loadTestsFromNames(SUITES)
+                suite = (unittest.defaultTestLoader.discover(str(Path(__file__).resolve().parents[1] / 'tests'),
+                         top_level_dir=str(Path(__file__).resolve().parents[1])) if all_tests else
+                         unittest.defaultTestLoader.loadTestsFromNames(SUITES))
             except Exception:
                 # Some non-ImportError exceptions escape unittest collection.
                 # Still return a machine-readable failure and restore guards.
@@ -92,6 +98,7 @@ def run_gate():
     report = {
         'passed': passed,
         'mode': 'offline-synthetic-mock-capture-desk',
+        'scope': 'all-tests' if all_tests else 'capture-desk',
         'count': result.testsRun,
         'tests': result.testsRun,
         'failure': len(result.failures),
@@ -111,5 +118,7 @@ def run_gate():
 
 
 if __name__ == '__main__':
-    argparse.ArgumentParser(description=__doc__).parse_args()
-    raise SystemExit(run_gate())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--all', action='store_true', help='Run all repository unit tests with the same offline guard.')
+    args = parser.parse_args()
+    raise SystemExit(run_gate(all_tests=args.all))

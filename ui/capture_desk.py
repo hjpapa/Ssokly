@@ -5,7 +5,7 @@ from pathlib import Path
 import queue
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 from uuid import uuid4
 
 from PIL import Image
@@ -14,7 +14,8 @@ from services.capture_service import capture_selected_region
 from services.document_library import DocumentLibrary, LibraryConflictError
 from services.document_service import attachment_kind, mime_type_for, read_hwpx_file, read_text_file
 from services.source_review import highlight_source
-from ui.desk_widgets import InlineTableView, ThumbnailCache, ZoomImageView
+from ui.desk_widgets import InlineTableView, ResponsivePanedWindow, ThumbnailCache, ZoomImageView
+from ui.desk_theme import apply_theme
 
 
 def fingerprint(text):
@@ -52,12 +53,9 @@ class CaptureDeskApp(tk.Tk):
         self._visible_count = 250
         self.title('Ssokly · 캡처와 텍스트')
         self.geometry('1280x800')
-        self.minsize(720, 560)
+        self.minsize(720, 680)
         self.configure(bg='#f5f7f8')
-        style = ttk.Style(self)
-        style.configure('Desk.TButton', padding=(9, 6))
-        style.configure('Desk.Treeview', rowheight=76)
-        self.option_add('*Font', ('Malgun Gothic', 10))
+        apply_theme(self)
         self._build_ui()
         self.thumbnails = ThumbnailCache(self)
         self.protocol('WM_DELETE_WINDOW', self.close)
@@ -69,14 +67,14 @@ class CaptureDeskApp(tk.Tk):
     def _build_ui(self):
         header = ttk.Frame(self, padding=(12, 10))
         header.pack(fill='x')
-        self._header_logo = ttk.Label(header, text='SSOKLY', font=('Segoe UI', 16, 'bold'))
+        self._header_logo = ttk.Label(header, text=' Ssokly', image=self.brand_icon, compound='left', font=('Segoe UI', 16, 'bold'))
         self._header_logo.grid(row=0, column=0, sticky='w', padx=(0, 14))
         self._header_primary = ttk.Frame(header)
         self._header_primary.grid(row=0, column=1, sticky='w')
         self._header_secondary = ttk.Frame(header)
         self._header_secondary.grid(row=0, column=2, sticky='e')
         header.columnconfigure(1, weight=1)
-        self.capture_button = ttk.Button(self._header_primary, text='새 캡처', command=self.capture_new, style='Desk.TButton')
+        self.capture_button = ttk.Button(self._header_primary, text='새 캡처', command=self.capture_new, style='Primary.TButton')
         self.capture_button.pack(side='left', padx=3)
         self.add_button = ttk.Button(self._header_primary, text='+ 페이지', command=self.capture_page, style='Desk.TButton')
         self.add_button.pack(side='left', padx=3)
@@ -85,12 +83,16 @@ class CaptureDeskApp(tk.Tk):
         self.library_button.pack(side='right')
         menu = tk.Menu(self, tearoff=False)
         menu.add_command(label='새 텍스트 문서', command=self.new_text_document)
+        menu.add_command(label='캡처 관리 · 전체 이미지', command=self.show_capture_manager)
         menu.add_command(label='기존 기록 보기', command=self.show_legacy_records)
         menu.add_command(label='원래 인식 내용 보기', command=self.show_original_text)
         menu.add_command(label='이전 AI 결과', command=self.show_output_history)
         menu.add_command(label='저장된 최신값 다시 열기…', command=self.reload_saved)
         menu.add_separator()
         menu.add_command(label='현재 문서 휴지통 / 복원', command=self.toggle_trash)
+        menu.add_separator()
+        menu.add_command(label='같은 라벨·메모 문서의 쪽 합치기', command=self.show_merge_dialog)
+        menu.add_command(label='선택한 쪽을 새 문서로 분리', command=self.show_split_dialog)
         more = ttk.Menubutton(self._header_secondary, text='더보기', menu=menu)
         more.pack(side='right', padx=6)
 
@@ -125,8 +127,9 @@ class CaptureDeskApp(tk.Tk):
         self.library_panel = ttk.Frame(self.main_split, width=250)
         self.main_split.add(self.library_panel, weight=0)
         ttk.Label(self.library_panel, text='자료 라이브러리', font=('Malgun Gothic', 11, 'bold')).pack(anchor='w', pady=(0, 5))
-        ttk.Label(self.library_panel, text='자료 검색 · 제목/본문/라벨/메모',
-                  foreground='#475467', wraplength=220).pack(anchor='w')
+        self.search_hint = ttk.Label(self.library_panel, text='자료 검색 · 제목/본문/라벨/메모',
+                                    foreground='#475467', wraplength=220)
+        self.search_hint.pack(anchor='w')
         self.query = tk.StringVar()
         search_bar = ttk.Frame(self.library_panel)
         search_bar.pack(fill='x', pady=(3, 5))
@@ -141,11 +144,28 @@ class CaptureDeskApp(tk.Tk):
                                         values=('전체 라벨',), state='readonly')
         self.label_picker.pack(fill='x', pady=(0, 5))
         self.label_picker.bind('<<ComboboxSelected>>', lambda _event: self.refresh_library())
+        organize = ttk.Menubutton(self.library_panel, text='자료 정리 · 라벨 / 쪽')
+        organize_menu = tk.Menu(organize, tearoff=False)
+        organize_menu.add_command(label='라벨 관리 · 이름 변경', command=self.manage_labels)
+        organize_menu.add_command(label='쪽 합치기', command=self.show_merge_dialog)
+        organize_menu.add_command(label='쪽 분리', command=self.show_split_dialog)
+        organize.configure(menu=organize_menu)
+        organize.pack(fill='x', pady=(0, 5))
         self.library_count = tk.StringVar(value='')
         ttk.Label(self.library_panel, textvariable=self.library_count, foreground='#667085').pack(anchor='w')
         self.show_trash = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.library_panel, text='휴지통', variable=self.show_trash,
+        ttk.Checkbutton(self.library_panel, text='문서 휴지통 보기', variable=self.show_trash,
                         command=self.refresh_library).pack(anchor='w')
+        self.document_trash_button = ttk.Button(self.library_panel, text='선택 문서 삭제 / 복원', command=self.toggle_trash, state='disabled')
+        self.document_trash_button.pack(fill='x')
+        trash_actions = ttk.Menubutton(self.library_panel, text='휴지통 관리 · 복원 / 영구 삭제')
+        trash_menu = tk.Menu(trash_actions, tearoff=False)
+        trash_menu.add_command(label='삭제한 페이지 · 복원 / 영구 삭제', command=self.show_deleted_pages)
+        trash_menu.add_command(label='선택 휴지통 문서 영구 삭제', command=self.purge_current_document)
+        trash_menu.add_separator()
+        trash_menu.add_command(label='휴지통 비우기', command=self.empty_trash)
+        trash_actions.configure(menu=trash_menu)
+        trash_actions.pack(fill='x', pady=(3, 5))
         listing = ttk.Frame(self.library_panel)
         listing.pack(fill='both', expand=True)
         self.document_tree = ttk.Treeview(listing, show='tree', selectmode='browse', style='Desk.Treeview')
@@ -155,6 +175,8 @@ class CaptureDeskApp(tk.Tk):
         bar.pack(side='right', fill='y')
         self.document_tree.pack(fill='both', expand=True)
         self.document_tree.bind('<<TreeviewSelect>>', self._document_selected)
+        self.document_tree.bind('<Button-3>', self._document_context_menu)
+        self.document_tree.tag_configure('alternate', background='#f4f8fa')
         ttk.Button(self.library_panel, text='더 보기', command=self._show_more).pack(fill='x', pady=4)
 
         self.workspace = ttk.Frame(self.main_split)
@@ -170,22 +192,26 @@ class CaptureDeskApp(tk.Tk):
         self.title_entry.bind('<KeyRelease>', lambda _event: self._schedule_save())
         self.adopt_button = ttk.Button(identity, text='새 문서로 가져오기', command=self.adopt_current)
         self.adopt_button.pack(side='right', padx=5)
-        self.view_button = ttk.Button(identity, text='원본 / 텍스트', command=self.toggle_compact_view)
+        self.view_button = ttk.Button(identity, text='화면 비율 초기화', command=self.toggle_compact_view)
         self.view_button.pack(side='right', padx=3)
+        self.details_button = ttk.Button(identity, text='라벨·메모', command=self.toggle_details)
+        self.details_button.pack(side='right', padx=3)
         details = ttk.Frame(self.workspace, padding=(10, 0, 0, 7))
-        details.pack(fill='x')
+        self.details_panel = details
         ttk.Label(details, text='라벨 (쉼표 구분)').grid(row=0, column=0, sticky='w', padx=(0, 6))
         self.labels_var = tk.StringVar()
         self.labels_entry = ttk.Entry(details, textvariable=self.labels_var)
         self.labels_entry.grid(row=0, column=1, sticky='ew', padx=(0, 10))
         self.labels_entry.bind('<KeyRelease>', lambda _event: self._schedule_save())
+        self.label_select_button = ttk.Button(details, text='라벨 선택', command=self.choose_labels)
+        self.label_select_button.grid(row=0, column=2, padx=(0, 6))
         ttk.Label(details, text='메모').grid(row=1, column=0, sticky='w', padx=(0, 6), pady=(5, 0))
         self.memo_var = tk.StringVar()
         self.memo_entry = ttk.Entry(details, textvariable=self.memo_var)
         self.memo_entry.grid(row=1, column=1, sticky='ew', padx=(0, 10), pady=(5, 0))
         self.memo_entry.bind('<KeyRelease>', lambda _event: self._schedule_save())
         details.columnconfigure(1, weight=1)
-        self.work_split = ttk.Panedwindow(self.workspace, orient='horizontal')
+        self.work_split = ResponsivePanedWindow(self.workspace, orient='horizontal')
         self.work_split.pack(fill='both', expand=True, padx=(10, 0))
         self.work_split.bind('<Configure>', self._schedule_layout)
         self.work_split.bind('<ButtonRelease-1>', self._schedule_layout)
@@ -199,10 +225,18 @@ class CaptureDeskApp(tk.Tk):
         self.page_selector = ttk.Combobox(page_bar, state='readonly', width=20)
         self.page_selector.pack(side='left', fill='x', expand=True)
         self.page_selector.bind('<<ComboboxSelected>>', self._page_selected)
+        self.page_selector.bind('<Button-3>', self._page_context_menu)
         ttk.Button(page_bar, text='↑', width=3, command=lambda: self.move_page(-1)).pack(side='left', padx=2)
         ttk.Button(page_bar, text='↓', width=3, command=lambda: self.move_page(1)).pack(side='left')
         self.image_view = ZoomImageView(self.image_panel)
         self.image_view.pack(fill='both', expand=True)
+        self.image_view.canvas.bind('<Button-3>', self._page_context_menu)
+        page_actions = ttk.Frame(self.image_panel)
+        self._page_actions = page_actions
+        page_actions.pack(fill='x', before=page_bar)
+        self.page_delete_button = ttk.Button(page_actions, text='이 페이지 삭제', command=self.delete_current_page, state='disabled')
+        self.page_delete_button.pack(side='left')
+        ttk.Button(page_actions, text='삭제한 페이지 복원', command=self.show_deleted_pages).pack(side='left', padx=3)
 
         self.editor_tabs = ttk.Notebook(self.editor_panel)
         self.editor_tabs.pack(fill='both', expand=True, padx=(7, 0))
@@ -250,7 +284,8 @@ class CaptureDeskApp(tk.Tk):
         self.selection_only = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.ai_panel, text='선택한 텍스트만 정리 (기본: 문서 전체)', variable=self.selection_only).pack(anchor='w')
         self.output_note = tk.StringVar(value='요약·일정·안내문을 필요할 때만 만드세요.')
-        ttk.Label(self.ai_panel, textvariable=self.output_note, wraplength=440, foreground='#667085').pack(fill='x', pady=5)
+        self.output_note_label = ttk.Label(self.ai_panel, textvariable=self.output_note, wraplength=440, foreground='#667085')
+        self.output_note_label.pack(fill='x', pady=5)
         self.output_editor = scrolledtext.ScrolledText(self.ai_panel, wrap='word', undo=True, height=8, width=1,
             font=('Malgun Gothic', 11), relief='flat', padx=12, pady=12)
         self.output_editor.bind('<<Modified>>', self._output_modified)
@@ -284,13 +319,16 @@ class CaptureDeskApp(tk.Tk):
         self._listing = {item['id']: item for item in records}
         available_labels = sorted({label for item in records for label in item.get('labels', [])}, key=str.casefold)
         current_filter = self.label_filter.get()
+        if current_filter != '전체 라벨' and current_filter not in available_labels and not self.query.get().strip():
+            current_filter = '전체 라벨'
+            self.label_filter.set(current_filter)
         self.label_picker.configure(values=('전체 라벨', *sorted(set(available_labels + ([current_filter] if current_filter != '전체 라벨' else [])), key=str.casefold)))
         if current_filter != '전체 라벨':
             records = [item for item in records if current_filter in item.get('labels', [])]
         self.library_count.set(f"{'검색 결과' if self.query.get().strip() else '자료'} {len(records)}건")
         self.document_tree.delete(*self.document_tree.get_children())
         self._library_photos = {}
-        for item in records[:self._visible_count]:
+        for row_index, item in enumerate(records[:self._visible_count]):
             photo = self.thumbnails.get(item.get('thumbnail_path'), (52, 44)) if item.get('thumbnail_path') else None
             detail = f"{str(item.get('updated_at', ''))[:10]} · {item['page_count']}쪽"
             context = []
@@ -307,9 +345,11 @@ class CaptureDeskApp(tk.Tk):
             if memo and not context:
                 context.append(memo[:20])
             caption = f"{item['title']}\n{detail}" + (f"\n{' · '.join(context)}" if context else '')
-            self.document_tree.insert('', 'end', iid=item['id'], text=caption, **opts)
+            self.document_tree.insert('', 'end', iid=item['id'], text=caption,
+                                      tags=('alternate',) if row_index % 2 else (), **opts)
         if previous and self.document_tree.exists(previous):
             self.document_tree.selection_set(previous)
+        self.document_trash_button.configure(state='normal' if self.document and self.document_tree.exists(self.document['id']) else 'disabled')
 
     def _search_changed(self, *_args):
         if self._refresh_id:
@@ -352,6 +392,8 @@ class CaptureDeskApp(tk.Tk):
         self.labels_var.set(', '.join(document.get('labels', [])))
         self.memo_var.set(document.get('memo', ''))
         self.labels_entry.configure(state='readonly' if locked else 'normal')
+        self.label_select_button.configure(state='disabled' if locked else 'normal')
+        self.document_trash_button.configure(text='선택 문서 복원' if document.get('trashed') else '선택 문서 삭제', state='normal')
         self.memo_entry.configure(state='readonly' if locked else 'normal')
         self.adopt_button.configure(state='normal' if document.get('readonly') and not document.get('trashed') else 'disabled')
         self.page_selector.configure(values=[f"{i + 1}쪽 · {page.get('source_name') or '캡처'}" for i, page in enumerate(pages)])
@@ -366,11 +408,12 @@ class CaptureDeskApp(tk.Tk):
                 self.output_note.set('기존 실행안 · 읽기 전용. 새 문서에서는 카드 없이 정리합니다.')
         self.status.set('기존 기록은 읽기 전용입니다. 새 문서로 가져와 편집할 수 있습니다.' if document.get('readonly') else '페이지별로 대조·수정하세요. 수정 내용은 자동 저장됩니다.')
         if document.get('trashed'):
-            self.status.set('휴지통 자료 · 더보기 → 현재 문서 휴지통 / 복원으로 복원한 뒤 편집하세요.')
+            self.status.set('휴지통 자료 · 보관함의 선택 문서 복원 버튼으로 복원한 뒤 편집하세요.')
         self.save_state.set('읽기 전용' if locked else '저장됨')
         self._show_recovery_warning()
         if self._is_compact():
             self._compact_library = False
+            self._compact_image = bool(self.page and self.page.get('path'))
             self._apply_layout()
         return True
 
@@ -388,6 +431,8 @@ class CaptureDeskApp(tk.Tk):
         self.table_view.set_text(self.page['text'] if self.page else '')
         locked = not self.page or self.page.get('readonly') or self.document.get('readonly') or self.document.get('trashed')
         self.read_button.configure(state='disabled' if locked else 'normal')
+        can_delete = self.page and self.document and not self.document.get('readonly') and not self.document.get('trashed')
+        self.page_delete_button.configure(state='normal' if can_delete else 'disabled')
         self._show_recovery_warning()
 
     def _show_recovery_warning(self):
@@ -487,7 +532,7 @@ class CaptureDeskApp(tk.Tk):
                 if self.page.get('readonly') or self.page.get('recovery_required'):
                     raise LibraryConflictError('복구가 필요한 페이지의 입력은 저장하지 않습니다.')
                 saved = self.library.save_page_text(self.page['id'], self.source_editor.get('1.0', 'end-1c'),
-                    expected_updated_at=self.page['updated_at'])
+                    expected_updated_at=self.page['updated_at'], expected_document_id=self.document['id'])
                 self.page_records = [saved if p['id'] == saved['id'] else p for p in self.page_records]
                 self.page = saved
                 self._source_dirty = False
@@ -623,23 +668,395 @@ class CaptureDeskApp(tk.Tk):
                 self.library.capture_store.restore([self.document['id'].split(':', 1)[1]])
             else:
                 (self.library.restore if restore else self.library.trash)(self.document['id'], expected_updated_at=self.document['updated_at'])
-            self.document = None
-            self.page = None
-            self.output = None
-            self.page_records = []
-            self.title_var.set('')
-            self.labels_var.set('')
-            self.memo_var.set('')
-            self.page_selector.configure(values=[])
-            self.page_selector.set('')
-            self._replace(self.source_editor, '', readonly=True)
-            self._replace(self.output_editor, '', readonly=True)
-            self.image_view.set_image(None)
-            self.table_view.set_text('')
+            self._clear_document()
             self.refresh_library()
             self.status.set('복원했습니다.' if restore else '휴지통으로 옮겼습니다. 원본은 보존됩니다.')
         except Exception:
             self.status.set('휴지통 상태를 저장하지 못했습니다.')
+
+    def _clear_document(self):
+        self.document = self.page = self.output = None
+        self.page_records = []
+        self.title_var.set('')
+        self.labels_var.set('')
+        self.memo_var.set('')
+        self.page_selector.configure(values=[])
+        self.page_selector.set('')
+        self._replace(self.source_editor, '', readonly=True)
+        self._replace(self.output_editor, '', readonly=True)
+        self.image_view.set_image(None)
+        self.table_view.set_text('')
+
+    def _purge_snapshot(self, snapshot, parent=None):
+        documents, pages = snapshot['documents'], snapshot['pages']
+        if not documents and not pages:
+            self.status.set('휴지통이 비어 있습니다.')
+            return False
+        if not messagebox.askyesno('영구 삭제',
+                f'문서 {len(documents)}개(포함된 모든 페이지), 개별 페이지 {len(pages)}개를 영구 삭제할까요?\n'
+                '라벨·메모·텍스트·결과와 다른 문서가 사용하지 않는 캡처 원본이 삭제됩니다. 복원할 수 없습니다.', parent=parent or self):
+            return False
+        try:
+            result = self.library.purge_trash(snapshot)
+            for job in self._jobs.values():
+                if job.get('document_id') in documents or job.get('page_id') in pages:
+                    job['cancel'].set()
+            current = self.document['id'] if self.document else None
+            if current in documents:
+                self._clear_document()
+            elif current:
+                self.open_document(current)
+            self.refresh_library()
+            self.status.set('영구 삭제했습니다.' if not result['pending_files'] else
+                            '목록에서 삭제했습니다. 사용 중인 일부 이미지 파일의 정리가 남아 있습니다.')
+            return True
+        except Exception:
+            self.status.set('영구 삭제하지 못했습니다. 다른 창에서 변경했거나 파일을 사용 중일 수 있습니다. 휴지통을 새로고침하세요.')
+            return False
+
+    def purge_current_document(self):
+        if not self.document or not self.document.get('trashed') or not self.flush_edits():
+            self.status.set('문서 휴지통에서 영구 삭제할 문서를 선택하세요.')
+            return False
+        return self._purge_snapshot({'documents': {self.document['id']: self.document['updated_at']}, 'pages': {}})
+
+    def empty_trash(self):
+        if not self.flush_edits():
+            return False
+        try:
+            snapshot = self.library.trash_snapshot()
+        except Exception:
+            self.status.set('휴지통 목록을 읽지 못했습니다.')
+            return False
+        return self._purge_snapshot(snapshot)
+
+    def _page_context_menu(self, event):
+        menu = tk.Menu(self, tearoff=False)
+        allowed = self.page and self.document and not self.document.get('readonly') and not self.document.get('trashed')
+        menu.add_command(label='이 페이지 삭제 · 휴지통으로', command=self.delete_current_page,
+                         state='normal' if allowed else 'disabled')
+        menu.add_command(label='삭제한 페이지 복원…', command=self.show_deleted_pages)
+        menu.add_command(label='쪽을 새 문서로 분리…', command=self.show_split_dialog,
+                         state='normal' if allowed and len(self.page_records) > 1 else 'disabled')
+        menu.add_separator()
+        menu.add_command(label='이미지 화면에 맞추기', command=self.image_view.fit)
+        menu.add_command(label='이미지 확대', command=self.image_view.zoom_in)
+        menu.add_command(label='이미지 축소', command=self.image_view.zoom_out)
+        menu.add_command(label='이미지 100%', command=self.image_view.original_size)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return 'break'
+
+    def _document_context_menu(self, event):
+        selected = self.document_tree.identify_row(event.y)
+        if not selected or not self.open_document(selected):
+            return 'break'
+        self.document_tree.selection_set(selected)
+        menu = tk.Menu(self, tearoff=False)
+        menu.add_command(label='문서 복원' if self.document.get('trashed') else '문서 삭제 · 휴지통으로', command=self.toggle_trash)
+        if self.document.get('trashed'):
+            menu.add_command(label='문서 영구 삭제…', command=self.purge_current_document)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return 'break'
+
+    def delete_current_page(self):
+        if not self.page or not self.document or self.document.get('readonly') or self.document.get('trashed'):
+            return False
+        if not self.flush_edits():
+            return False
+        index = next(i for i, page in enumerate(self.page_records) if page['id'] == self.page['id'])
+        if not messagebox.askyesno('페이지 삭제', f'{index + 1}쪽을 휴지통으로 옮길까요?\n원본과 수정 텍스트는 보존되며 삭제한 페이지에서 복원할 수 있습니다.', parent=self):
+            return False
+        try:
+            page_id, document_id = self.page['id'], self.document['id']
+            self.library.set_page_trash(page_id, True, expected_updated_at=self.document['updated_at'])
+            for job in self._jobs.values():
+                if job.get('page_id') == page_id:
+                    job['cancel'].set()
+            if self.library.get_document(document_id).get('trashed'):
+                self._clear_document()
+            else:
+                self.open_document(document_id)
+            if self.page_records:
+                self._load_page(min(index, len(self.page_records) - 1))
+            self.refresh_library()
+            self.status.set('페이지를 삭제했습니다. 삭제한 페이지 · 복원에서 되돌릴 수 있습니다.')
+            return True
+        except Exception:
+            self.status.set('페이지를 삭제하지 못했습니다. 최신 문서 상태를 확인하세요.')
+            return False
+
+    def show_deleted_pages(self):
+        if not self.flush_edits():
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title('페이지 휴지통 · 복원 / 영구 삭제')
+        dialog.geometry('640x420')
+        dialog.transient(self)
+        ttk.Label(dialog, text='마지막 페이지를 삭제하면 문서도 휴지통으로 이동합니다. 직접 삭제한 문서는 문서를 먼저 복원하세요.',
+                  wraplength=590, padding=10).pack(fill='x')
+        listing = ttk.Treeview(dialog, columns=('document', 'page'), show='headings', selectmode='browse')
+        listing.heading('document', text='문서')
+        listing.heading('page', text='삭제한 페이지')
+        listing.pack(fill='both', expand=True, padx=10)
+        note = tk.StringVar(dialog)
+        ttk.Label(dialog, textvariable=note, padding=8).pack(fill='x')
+        versions = {}
+
+        def refresh():
+            listing.delete(*listing.get_children())
+            versions.clear()
+            try:
+                for page in self.library.deleted_pages():
+                    versions[page['id']] = self.library.get_document(page['document_id'])['updated_at']
+                    listing.insert('', 'end', iid=page['id'], values=(
+                        ('[문서 휴지통] ' if page['document_trashed'] else '') + page['document_title'],
+                        f"{page['position'] + 1}쪽 · {page['source_name'] or '캡처'}"))
+                note.set(f'삭제한 페이지 {len(versions)}개')
+            except Exception:
+                note.set('삭제한 페이지를 읽지 못했습니다.')
+
+        def restore():
+            selected = listing.selection()
+            if not selected or not self.flush_edits():
+                return
+            try:
+                document_id = self.library.set_page_trash(selected[0], False, expected_updated_at=versions[selected[0]])
+                self.open_document(document_id)
+                self._load_page(next(i for i, page in enumerate(self.page_records) if page['id'] == selected[0]))
+                self.refresh_library()
+                refresh()
+                note.set('페이지를 복원했습니다.')
+            except Exception:
+                note.set('복원하지 못했습니다. 문서를 먼저 복원하거나 목록을 새로고침하세요.')
+
+        actions = ttk.Frame(dialog, padding=10)
+        actions.pack(fill='x')
+        ttk.Button(actions, text='선택 페이지 복원', command=restore).pack(side='left')
+        def purge():
+            selected = listing.selection()
+            if selected and self.flush_edits():
+                if self._purge_snapshot({'documents': {}, 'pages': {selected[0]: versions[selected[0]]}}, parent=dialog):
+                    refresh()
+                    note.set('선택 페이지를 영구 삭제했습니다.')
+                else:
+                    note.set(self.status.get())
+        ttk.Button(actions, text='선택 페이지 영구 삭제', command=purge).pack(side='left', padx=5)
+        ttk.Button(actions, text='새로고침', command=refresh).pack(side='left', padx=5)
+        ttk.Button(actions, text='닫기', command=dialog.destroy).pack(side='right')
+        refresh()
+
+    def choose_labels(self):
+        if not self.document or self.document.get('readonly') or self.document.get('trashed') or not self.flush_edits():
+            return
+        document_id = self.document['id']
+        try:
+            names = list(self.library.label_counts())
+        except Exception:
+            self.status.set('라벨 목록을 읽지 못했습니다.')
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title('문서 라벨 선택')
+        dialog.transient(self)
+        ttk.Label(dialog, text='라벨을 클릭해 선택하거나 해제하세요. 새 라벨은 입력칸에서 추가합니다.', wraplength=380, padding=10).pack()
+        listing = tk.Listbox(dialog, selectmode='multiple', exportselection=False, width=35, height=12)
+        listing.pack(fill='both', expand=True, padx=10)
+        for index, name in enumerate(names):
+            listing.insert('end', name)
+            if name in self.document.get('labels', []):
+                listing.selection_set(index)
+
+        def apply():
+            chosen = [names[index] for index in listing.curselection()]
+            if len(chosen) > 8:
+                messagebox.showerror('라벨 선택', '라벨은 최대 8개까지 지정할 수 있습니다.', parent=dialog)
+                return
+            if not self.document or self.document['id'] != document_id:
+                dialog.destroy()
+                return
+            self.labels_var.set(', '.join(chosen))
+            if self.flush_edits():
+                dialog.destroy()
+
+        ttk.Button(dialog, text='선택 적용', command=apply).pack(pady=10)
+        dialog.grab_set()
+
+    def manage_labels(self):
+        if not self.flush_edits():
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title('라벨 관리 · 이름 변경')
+        dialog.transient(self)
+        ttk.Label(dialog, text='이름 변경은 휴지통을 포함한 모든 문서에 반영됩니다.\n이미 있는 이름으로 바꾸면 라벨이 합쳐집니다.', padding=10).pack()
+        listing = ttk.Treeview(dialog, columns=('name', 'count'), show='headings', selectmode='browse', height=12)
+        listing.heading('name', text='라벨')
+        listing.heading('count', text='문서 수')
+        listing.pack(fill='both', expand=True, padx=10)
+        note = tk.StringVar(dialog)
+        ttk.Label(dialog, textvariable=note, padding=8).pack()
+
+        def refresh():
+            listing.delete(*listing.get_children())
+            try:
+                for name, count in self.library.label_counts().items():
+                    listing.insert('', 'end', values=(name, count))
+            except Exception:
+                note.set('라벨을 읽지 못했습니다.')
+
+        def rename():
+            selected = listing.selection()
+            if not selected or not self.flush_edits():
+                return
+            old = listing.item(selected[0], 'values')[0]
+            new = simpledialog.askstring('라벨 이름 변경', f'「{old}」의 새 이름', initialvalue=old, parent=dialog)
+            if new is None:
+                return
+            try:
+                count = self.library.rename_label(old, new)
+                if self.label_filter.get() == old:
+                    self.label_filter.set(new.strip())
+                if self.document:
+                    self.document = self.library.get_document(self.document['id'])
+                    self.labels_var.set(', '.join(self.document.get('labels', [])))
+                self.refresh_library()
+                refresh()
+                note.set(f'{count}개 문서의 라벨을 변경했습니다.')
+            except (ValueError, TypeError) as error:
+                note.set(str(error))
+            except Exception:
+                note.set('라벨 이름을 변경하지 못했습니다.')
+
+        ttk.Button(dialog, text='선택 라벨 이름 변경', command=rename).pack(pady=8)
+        refresh()
+        dialog.grab_set()
+
+    def _can_organize(self):
+        if not self.document or self.document.get('readonly') or self.document.get('trashed'):
+            self.status.set('편집 가능한 문서를 먼저 선택하세요.')
+            return False
+        return self.flush_edits()
+
+    def show_capture_manager(self):
+        if self.flush_edits():
+            from ui.capture_manager import CaptureManager
+            CaptureManager(self)
+
+    def _finish_organize(self, document_id, affected_ids):
+        for job in self._jobs.values():
+            if job.get('document_id') in affected_ids:
+                job['cancel'].set()
+        self.show_trash.set(False)
+        self.query.set('')
+        self.open_document(document_id)
+        self.refresh_library(select_id=document_id)
+
+    def show_merge_dialog(self):
+        if not self._can_organize():
+            return
+        target = dict(self.document)
+        try:
+            candidates = self.library.related_documents(target['id'])
+        except Exception:
+            self.status.set('합칠 문서 목록을 읽지 못했습니다.')
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title('같은 라벨·메모 · 쪽 합치기')
+        dialog.geometry('700x450')
+        dialog.transient(self)
+        ttk.Label(dialog, text=f"현재 문서: {target['title']}\n선택한 문서의 쪽을 아래 목록 순서대로 뒤에 붙입니다. Ctrl/Shift로 여러 문서를 선택하세요.",
+                  wraplength=650, padding=10).pack(fill='x')
+        listing = ttk.Treeview(dialog, columns=('title', 'pages', 'match'), show='headings', selectmode='extended')
+        for name, caption, width in (('title', '문서', 260), ('pages', '쪽 수', 60), ('match', '같은 분류', 280)):
+            listing.heading(name, text=caption)
+            listing.column(name, width=width)
+        listing.pack(fill='both', expand=True, padx=10)
+        by_id = {doc['id']: doc for doc in candidates}
+        for doc in candidates:
+            listing.insert('', 'end', iid=doc['id'], values=(doc['title'], doc['page_count'], ' · '.join(doc['match_reasons'])))
+        note = tk.StringVar(dialog, value='공통 라벨 또는 같은 메모가 있는 문서가 없습니다.' if not candidates else '합칠 문서를 선택하세요.')
+        ttk.Label(dialog, textvariable=note, wraplength=650, padding=10).pack(fill='x')
+        ttk.Label(dialog, text='현재 문서의 제목·라벨·메모는 유지됩니다.\n쪽을 모두 옮긴 문서는 휴지통으로 이동하며 기존 AI 결과·메모·삭제한 쪽은 그 문서에 남습니다.',
+                  wraplength=650, padding=(10, 0)).pack(fill='x')
+
+        def summarize(_event=None):
+            selected = listing.selection()
+            count = sum(by_id[identity]['page_count'] for identity in selected)
+            note.set(f'{len(selected)}개 문서 · {count}쪽을 현재 문서 뒤에 붙입니다.')
+
+        def apply():
+            selected = [identity for identity in listing.get_children() if identity in listing.selection()]
+            if not selected:
+                note.set('합칠 문서를 먼저 선택하세요.')
+                return
+            try:
+                versions = {identity: by_id[identity]['updated_at'] for identity in selected}
+                versions[target['id']] = target['updated_at']
+                self.library.merge_documents(target['id'], selected, expected_versions=versions)
+                self._finish_organize(target['id'], set(versions))
+                self.status.set(f'{len(selected)}개 문서의 쪽을 합쳤습니다. 원본과 수정 텍스트는 유지됩니다.')
+                dialog.destroy()
+            except (ValueError, KeyError) as error:
+                note.set(str(error))
+            except Exception:
+                note.set('합치기를 완료하지 못했습니다. 원본 쪽은 유지합니다. 저장 상태를 확인하세요.')
+
+        listing.bind('<<TreeviewSelect>>', summarize)
+        actions = ttk.Frame(dialog, padding=10)
+        actions.pack(fill='x')
+        ttk.Button(actions, text='선택 문서의 쪽 합치기', command=apply).pack(side='left')
+        ttk.Button(actions, text='취소', command=dialog.destroy).pack(side='right')
+        dialog.grab_set()
+
+    def show_split_dialog(self):
+        if not self._can_organize():
+            return
+        if len(self.page_records) < 2:
+            self.status.set('쪽을 분리하려면 문서에 두 쪽 이상이 필요합니다.')
+            return
+        source = dict(self.document)
+        dialog = tk.Toplevel(self)
+        dialog.title('선택한 쪽을 새 문서로 분리')
+        dialog.geometry('580x430')
+        dialog.transient(self)
+        ttk.Label(dialog, text='새 문서로 옮길 쪽을 선택하세요. 현재 문서에는 한 쪽 이상 남겨 둡니다.', wraplength=540, padding=10).pack(fill='x')
+        title = tk.StringVar(dialog, value=source['title'] + ' (분리)')
+        title_row = ttk.Frame(dialog, padding=(10, 0, 10, 10))
+        title_row.pack(fill='x')
+        ttk.Label(title_row, text='새 문서 제목').pack(side='left', padx=(0, 8))
+        ttk.Entry(title_row, textvariable=title).pack(side='left', fill='x', expand=True)
+        listing = ttk.Treeview(dialog, columns=('page', 'name'), show='headings', selectmode='extended')
+        listing.heading('page', text='쪽')
+        listing.column('page', width=60)
+        listing.heading('name', text='원본')
+        listing.pack(fill='both', expand=True, padx=10)
+        for index, page in enumerate(self.page_records):
+            listing.insert('', 'end', iid=page['id'], values=(index + 1, page.get('source_name') or '캡처'))
+        if self.page:
+            listing.selection_set(self.page['id'])
+        note = tk.StringVar(dialog, value='라벨·메모와 원본·수정본·가림 설정을 유지합니다. AI 결과는 기존 문서에 남습니다.')
+        ttk.Label(dialog, textvariable=note, wraplength=540, padding=10).pack(fill='x')
+
+        def apply():
+            try:
+                doc = self.library.split_pages(source['id'], listing.selection(), title.get(), expected_updated_at=source['updated_at'])
+                self._finish_organize(doc['id'], {source['id']})
+                self.status.set('선택한 쪽을 새 문서로 분리했습니다.')
+                dialog.destroy()
+            except (ValueError, KeyError) as error:
+                note.set(str(error))
+            except Exception:
+                note.set('분리를 완료하지 못했습니다. 원본 쪽은 유지합니다. 저장 상태를 확인하세요.')
+
+        actions = ttk.Frame(dialog, padding=10)
+        actions.pack(fill='x')
+        ttk.Button(actions, text='선택한 쪽 분리', command=apply).pack(side='left')
+        ttk.Button(actions, text='취소', command=dialog.destroy).pack(side='right')
+        dialog.grab_set()
 
     def toggle_library(self):
         # A pane can still be present after its sash was dragged to zero.
@@ -655,7 +1072,7 @@ class CaptureDeskApp(tk.Tk):
         self._apply_layout()
 
     def toggle_compact_view(self):
-        self._compact_image = not self._compact_image
+        # Kept as the reset command for existing callers; neither pane is hidden.
         self._compact_library = False
         self._reset_work_sash = True
         self._apply_layout()
@@ -671,10 +1088,20 @@ class CaptureDeskApp(tk.Tk):
         scale = max(1.0, float(self.winfo_fpixels('1i')) / 96.0)
         library_min = round(180 * scale)
         library_width = round(220 * scale)
-        image_min = max(round(280 * scale), self._page_bar.winfo_reqwidth())
+        image_min = max(round(280 * scale), self._page_bar.winfo_reqwidth(), self._page_actions.winfo_reqwidth())
         editor_min = max(round(320 * scale), self._copy_bar.winfo_reqwidth() + 20,
                          self._ai_mode_picker.winfo_reqwidth() + self.generate_button.winfo_reqwidth() + 20)
         return library_min, library_width, image_min, editor_min
+
+    def toggle_details(self):
+        if self.details_panel.winfo_manager():
+            self.details_panel.pack_forget()
+            self.details_button.configure(text='라벨·메모')
+        else:
+            self.details_panel.pack(fill='x', before=self.work_split)
+            self.details_button.configure(text='라벨·메모 닫기')
+        self._reset_work_sash = True
+        self._schedule_layout()
 
     def _is_compact(self):
         _library_min, library_width, image_min, editor_min = self._layout_metrics()
@@ -693,7 +1120,7 @@ class CaptureDeskApp(tk.Tk):
         library_min, library_width, image_min, editor_min = self._layout_metrics()
         if len(self.main_split.panes()) == 2:
             width = self.main_split.winfo_width()
-            work_min = (image_min if self._compact_image else editor_min) if self._layout_compact else image_min + editor_min + 16
+            work_min = max(image_min, editor_min) if self._layout_compact else image_min + editor_min + 16
             upper = width - work_min - 16
             if upper >= library_min:
                 current = self.main_split.sashpos(0)
@@ -702,12 +1129,14 @@ class CaptureDeskApp(tk.Tk):
                 if current != target:
                     self.main_split.sashpos(0, target)
         if len(self.work_split.panes()) == 2:
-            width = self.work_split.winfo_width()
-            upper = width - editor_min - 6
-            if upper >= image_min:
+            vertical = str(self.work_split.cget('orient')) == 'vertical'
+            extent = self.work_split.winfo_height() if vertical else self.work_split.winfo_width()
+            lower = max(self._page_bar.winfo_reqheight() + 150, int(extent * .40)) if vertical else image_min
+            upper = extent - max(160, int(extent * .40)) - 7 if vertical else extent - editor_min - 7
+            if upper >= lower:
                 current = self.work_split.sashpos(0)
-                preferred = width // 2 if self._reset_work_sash else current
-                target = min(upper, max(image_min, preferred))
+                preferred = int(extent * (.50 if vertical else .52)) if self._reset_work_sash else current
+                target = min(upper, max(lower, preferred))
                 if current != target:
                     self.work_split.sashpos(0, target)
         self._reset_main_sash = self._reset_work_sash = False
@@ -723,21 +1152,41 @@ class CaptureDeskApp(tk.Tk):
         return True
 
     def _apply_layout(self, *, schedule=True):
+        if self.document and self.document.get('readonly') and not self.document.get('trashed'):
+            if not self.adopt_button.winfo_manager():
+                self.adopt_button.pack(side='right', padx=5)
+        else:
+            self.adopt_button.pack_forget()
         compact = self._is_compact()
         library_min, _library_width, image_min, editor_min = self._layout_metrics()
         show_library = self._compact_library if compact else self._library_requested
-        work_min = image_min if self._compact_image else editor_min
+        work_min = max(image_min, editor_min)
         library_only = compact and show_library and self.winfo_width() - 40 < library_min + work_min
+        hint_width = max(220, self.winfo_width() - 40) if library_only else 220
+        if int(self.search_hint.cget('wraplength')) != hint_width:
+            self.search_hint.configure(wraplength=hint_width)
         main = [(self.library_panel, 0)] if show_library else []
         if not library_only:
             main.append((self.workspace, 1))
         if self._set_panes(self.main_split, main):
             self._reset_main_sash = True
-        desired = [self.image_panel if self._compact_image else self.editor_panel] if compact else [self.image_panel, self.editor_panel]
+        # Decide from the actual work area, after the library has been folded.
+        # A compact sidebar must not force a shallow image strip on a wide desk.
+        available = min(self.workspace.winfo_width() - 10, self.winfo_width() - 40)
+        orientation = 'horizontal' if available >= image_min + editor_min + 16 else 'vertical'
+        if str(self.work_split.cget('orient')) != orientation:
+            self.work_split.configure(orient=orientation)
+            self._reset_work_sash = True
+        desired = [self.image_panel, self.editor_panel]
         if self._set_panes(self.work_split, [(panel, 1) for panel in desired]):
             self._reset_work_sash = True
         self._layout_compact = compact
-        self.view_button.configure(text='텍스트 보기' if compact and self._compact_image else '원본 보기' if compact else '원본 / 텍스트')
+        self.image_view.set_compact_tools(compact)
+        self.view_button.configure(text='화면 비율 초기화')
+        if compact:
+            self._page_actions.pack_forget()
+        elif not self._page_actions.winfo_manager():
+            self._page_actions.pack(fill='x', before=self._page_bar)
         self.recovery_label.configure(wraplength=max(250, self.winfo_width() - 330))
         header_width = (self._header_logo.winfo_reqwidth() + self._header_primary.winfo_reqwidth()
                         + self._header_secondary.winfo_reqwidth() + 52)
@@ -751,6 +1200,7 @@ class CaptureDeskApp(tk.Tk):
             self._transfer_hint.pack(side='left')
         ai_width = self._ai_controls.winfo_width()
         if ai_width > 1:
+            self.output_note_label.configure(wraplength=max(200, ai_width - 12), font=('Malgun Gothic', 8 if compact else 10))
             mode_width = self._ai_mode_picker.winfo_reqwidth() + 4
             audience_width = self.audience_picker.winfo_reqwidth() + 4 if self.ai_mode.get() == '안내문' else 0
             audience_row = int(mode_width + audience_width > ai_width)

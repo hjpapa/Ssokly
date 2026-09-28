@@ -15,7 +15,7 @@ from services.capture_store import CaptureConflictError, CaptureStore
 from services.task_store import TaskStore
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _CAPTURE_WARNING = '캡처 이미지를 읽을 수 없습니다. 저장된 텍스트는 유지되며 복구가 필요합니다.'
 _DOCUMENT_WARNING = '일부 캡처를 읽을 수 없습니다. 저장된 텍스트는 유지되며 복구가 필요합니다.'
 _SCHEMA = (
@@ -95,6 +95,22 @@ class DocumentLibrary:
         self.capture_store = capture_store if capture_store is not None else CaptureStore(self.app_data_dir / 'capture_inbox')
         self.task_store = task_store if task_store is not None else TaskStore(app_data_dir=self.app_data_dir)
         self._initialize()
+        self._repair_deleted_only_documents()
+
+    def _auto_trash(self, db, document_id, page_id):
+        db.execute('UPDATE documents SET trashed_at=? WHERE id=?', (_stamp(), document_id))
+        db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                   ('auto_page_trash:' + document_id, json.dumps(page_id)))
+        self._touch(db, document_id)
+
+    def _repair_deleted_only_documents(self):
+        # Older versions left labelled empty documents after deleting the last page.
+        with self._db(write=True) as db:
+            for row in list(db.execute('SELECT id FROM documents WHERE trashed_at IS NULL '
+                    'AND EXISTS (SELECT 1 FROM pages WHERE document_id=documents.id) '
+                    'AND NOT EXISTS (SELECT 1 FROM pages WHERE document_id=documents.id AND trashed_at IS NULL)')):
+                page = db.execute('SELECT id FROM pages WHERE document_id=? ORDER BY trashed_at DESC,id LIMIT 1', (row['id'],)).fetchone()
+                self._auto_trash(db, row['id'], page['id'])
 
     @contextmanager
     def _db(self, write=False):
@@ -129,19 +145,21 @@ class DocumentLibrary:
                 # Old sidecars cannot distinguish typed text from OCR. Preserve
                 # every existing value instead of guessing it is replaceable.
                 db.execute('ALTER TABLE pages ADD COLUMN edited INTEGER NOT NULL DEFAULT 1')
+            if 'trashed_at' not in columns:
+                db.execute('ALTER TABLE pages ADD COLUMN trashed_at TEXT')
             document_columns = {row[1] for row in db.execute('PRAGMA table_info(documents)')}
             if 'labels_json' not in document_columns:
                 db.execute("ALTER TABLE documents ADD COLUMN labels_json TEXT NOT NULL DEFAULT '[]'")
             if 'memo' not in document_columns:
                 db.execute("ALTER TABLE documents ADD COLUMN memo TEXT NOT NULL DEFAULT ''")
             self._validate_schema(db)
-            db.execute('PRAGMA user_version=3')
+            db.execute('PRAGMA user_version=4')
 
     @staticmethod
     def _validate_schema(db):
         expected = {
             'documents': {'id', 'title', 'created_at', 'updated_at', 'trashed_at', 'labels_json', 'memo'},
-            'pages': {'id', 'document_id', 'capture_id', 'text', 'source_name', 'source_path', 'position', 'updated_at', 'ocr_text', 'edited'},
+            'pages': {'id', 'document_id', 'capture_id', 'text', 'source_name', 'source_path', 'position', 'updated_at', 'ocr_text', 'edited', 'trashed_at'},
             'outputs': {'id', 'document_id', 'mode', 'text', 'source_fingerprint', 'created_at', 'updated_at'},
             'settings': {'key', 'value_json'},
         }
@@ -181,8 +199,10 @@ class DocumentLibrary:
         return {**item, 'edited': bool(item['edited']), 'path': None, 'legacy': False, 'readonly': False,
                 'missing': False, 'warning': '', 'recovery_required': False}
 
-    def _pages(self, db, document_id):
-        return [self._page(row) for row in db.execute('SELECT * FROM pages WHERE document_id=? ORDER BY position,id', (document_id,))]
+    def _pages(self, db, document_id, *, trashed=False):
+        return [self._page(row) for row in db.execute(
+            'SELECT * FROM pages WHERE document_id=? AND (trashed_at IS NOT NULL)=? ORDER BY position,id',
+            (document_id, bool(trashed)))]
 
     def _document(self, db, row):
         pages = self._pages(db, row['id'])
@@ -235,6 +255,8 @@ class DocumentLibrary:
         self._managed(db, document_id)
         existing = db.execute('SELECT * FROM pages WHERE document_id=? AND capture_id=?', (document_id, capture_id)).fetchone()
         if existing:
+            if existing['trashed_at']:
+                raise LibraryReadOnlyError('삭제한 페이지에서 먼저 복원해 주세요.')
             return self._page(existing)
         capture = self.capture_store.get(capture_id)
         if capture is None:
@@ -279,13 +301,17 @@ class DocumentLibrary:
             saved = self._page(db.execute('SELECT * FROM pages WHERE id=?', (page_id,)).fetchone())
         return saved
 
-    def save_page_text(self, page_id, text, expected_updated_at):
+    def save_page_text(self, page_id, text, expected_updated_at, *, expected_document_id=None):
         text = _text(text)
         with self._db(write=True) as db:
             row = db.execute('SELECT * FROM pages WHERE id=?', (page_id,)).fetchone()
             if row is None:
                 raise LibraryReadOnlyError('기존 페이지는 읽기 전용입니다. 새 문서로 담은 뒤 편집해 주세요.')
+            if expected_document_id is not None and row['document_id'] != expected_document_id:
+                raise LibraryConflictError('페이지가 다른 문서로 이동했습니다. 입력을 보관하고 문서를 다시 열어 주세요.')
             self._managed(db, row['document_id'])
+            if row['trashed_at']:
+                raise LibraryReadOnlyError('삭제한 페이지를 먼저 복원해 주세요.')
             if row['capture_id']:
                 if self._page(row)['readonly']:
                     raise LibraryReadOnlyError('복구가 필요한 캡처의 저장된 텍스트는 변경할 수 없습니다.')
@@ -315,6 +341,8 @@ class DocumentLibrary:
             row = db.execute('SELECT * FROM pages WHERE id=?', (page_id,)).fetchone()
             if row is None:
                 raise LibraryReadOnlyError('기존 페이지는 읽기 전용입니다.')
+            if row['trashed_at']:
+                raise LibraryReadOnlyError('삭제한 페이지를 먼저 복원해 주세요.')
             if row['capture_id']:
                 raise ValueError('이미지 OCR 원문은 캡처 보관함에서 저장해 주세요.')
             self._managed(db, row['document_id'])
@@ -412,10 +440,12 @@ class DocumentLibrary:
         task = self.task_store.get(document_id)
         return self._task_document(task) if task else None
 
-    def pages(self, document_id):
+    def pages(self, document_id, *, trashed=False):
         with self._db() as db:
             if db.execute('SELECT 1 FROM documents WHERE id=?', (document_id,)).fetchone():
-                return self._pages(db, document_id)
+                return self._pages(db, document_id, trashed=trashed)
+        if trashed:
+            return []
         if document_id.startswith('capture:'):
             capture = self.capture_store.safe_get(document_id[len('capture:'):])
             if capture:
@@ -478,17 +508,249 @@ class DocumentLibrary:
         page_ids = list(page_ids)
         with self._db(write=True) as db:
             self._managed(db, document_id, expected_updated_at)
-            existing = {row[0] for row in db.execute('SELECT id FROM pages WHERE document_id=?', (document_id,))}
+            existing = {row[0] for row in db.execute('SELECT id FROM pages WHERE document_id=? AND trashed_at IS NULL', (document_id,))}
             if len(page_ids) != len(existing) or set(page_ids) != existing:
                 raise ValueError('이 문서의 모든 페이지를 중복 없이 지정해 주세요.')
-            db.executemany('UPDATE pages SET position=? WHERE id=?', [(index, page_id) for index, page_id in enumerate(page_ids)])
+            positions = [row[0] for row in db.execute(
+                'SELECT position FROM pages WHERE document_id=? AND trashed_at IS NULL ORDER BY position,id', (document_id,))]
+            db.executemany('UPDATE pages SET position=? WHERE id=?', list(zip(positions, page_ids)))
             self._touch(db, document_id)
             saved = self._pages(db, document_id)
         return saved
 
+    def set_page_trash(self, page_id, trashed, *, expected_updated_at):
+        """Hide only this document's page; retain its image, text and order."""
+        with self._db(write=True) as db:
+            row = db.execute('SELECT * FROM pages WHERE id=?', (page_id,)).fetchone()
+            if row is None:
+                raise LibraryReadOnlyError('기존 기록은 새 문서로 가져온 뒤 편집해 주세요.')
+            key = 'auto_page_trash:' + row['document_id']
+            automatic = db.execute('SELECT 1 FROM settings WHERE key=?', (key,)).fetchone()
+            self._managed(db, row['document_id'], expected_updated_at,
+                          allow_trashed=bool(automatic) and not trashed)
+            db.execute('UPDATE pages SET trashed_at=? WHERE id=?', (_stamp() if trashed else None, page_id))
+            if not trashed and automatic:
+                db.execute('UPDATE documents SET trashed_at=NULL WHERE id=?', (row['document_id'],))
+                db.execute('DELETE FROM settings WHERE key=?', (key,))
+            if trashed and not db.execute('SELECT 1 FROM pages WHERE document_id=? AND trashed_at IS NULL', (row['document_id'],)).fetchone():
+                self._auto_trash(db, row['document_id'], page_id)
+            self._touch(db, row['document_id'])
+        return row['document_id']
+
+    @staticmethod
+    def _match_reasons(target, candidate):
+        common = sorted(set(target.get('labels', [])) & set(candidate.get('labels', [])))
+        reasons = ['라벨: ' + ', '.join(common)] if common else []
+        if target.get('memo', '').strip() and target['memo'].strip() == candidate.get('memo', '').strip():
+            reasons.append('메모 같음')
+        return reasons
+
+    def capture_pages(self):
+        """Active captures with document metadata for the visual organizer."""
+        result = []
+        for doc in self.list_documents():
+            for page in self.pages(doc['id']):
+                if page.get('capture_id'):
+                    result.append(dict(page, document_title=doc['title'], labels=doc.get('labels', []),
+                                       memo=doc.get('memo', ''), document_version=doc['updated_at'],
+                                       document_readonly=doc.get('readonly', False)))
+        return result
+
+    def _selected_active_pages(self, db, page_ids, expected_versions):
+        ids = list(page_ids)
+        if not ids or len(set(ids)) != len(ids):
+            raise ValueError('캡처를 중복 없이 선택하세요.')
+        rows = []
+        for identity in ids:
+            row = db.execute('SELECT * FROM pages WHERE id=? AND trashed_at IS NULL', (identity,)).fetchone()
+            if row is None:
+                raise LibraryReadOnlyError('삭제되었거나 기존 읽기 전용인 페이지입니다. 목록을 새로고침하세요.')
+            rows.append(row)
+        for identity in {row['document_id'] for row in rows}:
+            if not expected_versions.get(identity):
+                raise LibraryConflictError('목록을 새로고침하세요.')
+            self._managed(db, identity, expected_versions[identity])
+        return rows
+
+    def rename_page(self, page_id, name, *, expected_updated_at):
+        name = _title(name)
+        if len(name) > 120 or '\n' in name or '\r' in name:
+            raise ValueError('캡처 이름은 줄바꿈 없이 120자 이내로 입력하세요.')
+        with self._db(write=True) as db:
+            row = db.execute('SELECT document_id FROM pages WHERE id=?', (page_id,)).fetchone()
+            if row is None:
+                raise LibraryReadOnlyError('기존 기록은 새 문서로 가져온 뒤 편집하세요.')
+            self._selected_active_pages(db, [page_id], {row[0]: expected_updated_at})
+            db.execute('UPDATE pages SET source_name=? WHERE id=?', (name, page_id))
+            self._touch(db, row[0])
+
+    def trash_pages(self, page_ids, *, expected_versions):
+        """All selected pages succeed or roll back together, across documents."""
+        with self._db(write=True) as db:
+            rows = self._selected_active_pages(db, page_ids, expected_versions)
+            stamp = _stamp()
+            for row in rows:
+                db.execute('UPDATE pages SET trashed_at=? WHERE id=?', (stamp, row['id']))
+            for identity in {row['document_id'] for row in rows}:
+                if not db.execute('SELECT 1 FROM pages WHERE document_id=? AND trashed_at IS NULL', (identity,)).fetchone():
+                    deleted = [row['id'] for row in rows if row['document_id'] == identity]
+                    self._auto_trash(db, identity, deleted)
+                self._touch(db, identity)
+
+    def move_pages(self, page_ids, target_id, *, expected_versions):
+        """Explicitly organize selected pages; source metadata stays with its document."""
+        with self._db(write=True) as db:
+            rows = self._selected_active_pages(db, page_ids, expected_versions)
+            if not expected_versions.get(target_id):
+                raise LibraryConflictError('이동할 문서 목록을 새로고침하세요.')
+            self._managed(db, target_id, expected_versions[target_id])
+            sources = {row['document_id'] for row in rows}
+            if target_id in sources:
+                raise ValueError('이미 대상 문서에 있는 캡처는 선택에서 제외하세요.')
+            captures = {r[0] for r in db.execute('SELECT capture_id FROM pages WHERE document_id=? AND capture_id IS NOT NULL', (target_id,))}
+            for row in rows:
+                if row['capture_id']:
+                    if row['capture_id'] in captures:
+                        raise ValueError('동일한 캡처가 중복됩니다. 선택 항목과 대상 문서를 확인하세요.')
+                    captures.add(row['capture_id'])
+            self._prepare_page_move(sources, target_id, rows)
+            for identity in sources | {target_id}:
+                self._managed(db, identity, expected_versions[identity])
+            position = db.execute('SELECT COALESCE(MAX(position),-1)+1 FROM pages WHERE document_id=?', (target_id,)).fetchone()[0]
+            for offset, row in enumerate(rows):
+                db.execute('UPDATE pages SET document_id=?,position=? WHERE id=?', (target_id, position + offset, row['id']))
+            for identity in sources:
+                if not db.execute('SELECT 1 FROM pages WHERE document_id=? AND trashed_at IS NULL', (identity,)).fetchone():
+                    db.execute('UPDATE documents SET trashed_at=? WHERE id=?', (_stamp(), identity))
+                self._touch(db, identity)
+            self._touch(db, target_id)
+
+    def related_documents(self, document_id):
+        target = self.get_document(document_id)
+        if not target or target.get('readonly') or target.get('trashed'):
+            return []
+        return [dict(doc, match_reasons=reasons) for doc in self.list_documents()
+                if doc['id'] != document_id and not doc.get('readonly') and doc['page_count']
+                and (reasons := self._match_reasons(target, doc))]
+
+    def _prepare_page_move(self, source_ids, target_id, pages):
+        # Carry restrictions BEFORE moving any content. Failure can only leave
+        # stricter target policy/extra compatibility links, never exposed content.
+        from services.desk_transfer import DeskTransfer
+        from services.transfer_policy import TransferPolicyStore
+        captures = list(dict.fromkeys(page['capture_id'] for page in pages if page['capture_id']))
+        DeskTransfer(TransferPolicyStore(self.app_data_dir)).inherit_document_policy(source_ids, captures, target_id)
+        if captures:
+            self.capture_store.link_to_task(captures, target_id)
+
+    def merge_documents(self, target_id, source_ids, *, expected_versions):
+        source_ids = list(source_ids)
+        if not source_ids or target_id in source_ids or len(set(source_ids)) != len(source_ids):
+            raise ValueError('합칠 문서를 중복 없이 선택해 주세요.')
+        if set(expected_versions) != {target_id, *source_ids} or not all(expected_versions.values()):
+            raise LibraryConflictError('문서 목록을 새로 열어 저장 버전을 확인해 주세요.')
+        with self._db(write=True) as db:
+            target_row = self._managed(db, target_id, expected_versions[target_id])
+            target = self._document(db, target_row)
+            pages = []
+            for source_id in source_ids:
+                row = self._managed(db, source_id, expected_versions[source_id])
+                doc = self._document(db, row)
+                if not self._match_reasons(target, doc):
+                    raise ValueError('공통 라벨 또는 같은 메모가 있는 문서만 합칠 수 있습니다.')
+                incoming = list(db.execute('SELECT * FROM pages WHERE document_id=? AND trashed_at IS NULL ORDER BY position,id', (source_id,)))
+                if not incoming:
+                    raise ValueError('합칠 페이지가 없는 문서입니다.')
+                pages.extend(incoming)
+            captures = {row[0] for row in db.execute('SELECT capture_id FROM pages WHERE document_id=? AND capture_id IS NOT NULL', (target_id,))}
+            for page in pages:
+                if page['capture_id']:
+                    if page['capture_id'] in captures:
+                        raise ValueError('동일한 캡처가 중복됩니다. 중복 페이지를 먼저 확인해 주세요.')
+                    captures.add(page['capture_id'])
+            self._prepare_page_move(source_ids, target_id, pages)
+            for identity, version in expected_versions.items():
+                self._managed(db, identity, version)
+            position = db.execute('SELECT COALESCE(MAX(position),-1)+1 FROM pages WHERE document_id=?', (target_id,)).fetchone()[0]
+            for offset, page in enumerate(pages):
+                db.execute('UPDATE pages SET document_id=?,position=? WHERE id=?', (target_id, position + offset, page['id']))
+            self._touch(db, target_id)
+            for source_id in source_ids:
+                # Preserve source metadata, deleted pages and AI result history.
+                db.execute('UPDATE documents SET trashed_at=? WHERE id=?', (_stamp(), source_id))
+                self._touch(db, source_id)
+            return self._document(db, db.execute('SELECT * FROM documents WHERE id=?', (target_id,)).fetchone())
+
+    def split_pages(self, document_id, page_ids, title, *, expected_updated_at):
+        title = _title(title)
+        if not expected_updated_at:
+            raise LibraryConflictError('문서를 다시 열어 저장 버전을 확인해 주세요.')
+        selected = list(page_ids)
+        if not selected or len(selected) != len(set(selected)):
+            raise ValueError('분리할 페이지를 중복 없이 선택해 주세요.')
+        with self._db(write=True) as db:
+            source = self._managed(db, document_id, expected_updated_at)
+            active = list(db.execute('SELECT * FROM pages WHERE document_id=? AND trashed_at IS NULL ORDER BY position,id', (document_id,)))
+            if not set(selected) < {row['id'] for row in active}:
+                raise ValueError('현재 문서에 한 쪽 이상 남도록 분리할 페이지를 선택해 주세요.')
+            pages = [row for row in active if row['id'] in set(selected)]
+            target = self._create_document(db, title)
+            self._prepare_page_move([document_id], target['id'], pages)
+            self._managed(db, document_id, expected_updated_at)
+            db.execute('UPDATE documents SET labels_json=?,memo=? WHERE id=?', (source['labels_json'], source['memo'], target['id']))
+            for position, page in enumerate(pages):
+                db.execute('UPDATE pages SET document_id=?,position=? WHERE id=?', (target['id'], position, page['id']))
+            self._touch(db, document_id)
+            self._touch(db, target['id'])
+            return self._document(db, db.execute('SELECT * FROM documents WHERE id=?', (target['id'],)).fetchone())
+
+    def deleted_pages(self):
+        with self._db() as db:
+            return [dict(self._page(row), document_title=row['document_title'],
+                         document_trashed=bool(row['document_trashed']), trashed=True)
+                    for row in db.execute('SELECT pages.*, documents.title AS document_title, '
+                        'documents.trashed_at AS document_trashed FROM pages JOIN documents '
+                        'ON pages.document_id=documents.id WHERE pages.trashed_at IS NOT NULL '
+                        'ORDER BY pages.trashed_at DESC, pages.id')]
+
+    def label_counts(self):
+        counts = {}
+        with self._db() as db:
+            for row in db.execute('SELECT labels_json FROM documents'):
+                for label in json.loads(row[0]):
+                    counts[label] = counts.get(label, 0) + 1
+        return dict(sorted(counts.items(), key=lambda item: item[0].casefold()))
+
+    def rename_label(self, old, new):
+        """Rename in all managed documents atomically, merging duplicate labels."""
+        values = _labels([new])
+        if len(values) != 1:
+            raise ValueError('새 라벨 이름을 입력해 주세요.')
+        new = values[0]
+        count = 0
+        with self._db(write=True) as db:
+            for row in list(db.execute('SELECT id,labels_json FROM documents')):
+                labels = json.loads(row['labels_json'])
+                if old not in labels:
+                    continue
+                replaced = _labels([new if label == old or label.casefold() == new.casefold() else label for label in labels])
+                db.execute('UPDATE documents SET labels_json=? WHERE id=?',
+                           (json.dumps(replaced, ensure_ascii=False), row['id']))
+                self._touch(db, row['id'])
+                count += 1
+        return count
+
     def _set_trash(self, document_id, trashed, expected_updated_at):
         with self._db(write=True) as db:
             self._managed(db, document_id, expected_updated_at, allow_trashed=True)
+            key = 'auto_page_trash:' + document_id
+            marker = db.execute('SELECT value_json FROM settings WHERE key=?', (key,)).fetchone()
+            if not trashed and marker:
+                deleted = json.loads(marker[0])
+                for page_id in deleted if isinstance(deleted, list) else [deleted]:
+                    db.execute('UPDATE pages SET trashed_at=NULL WHERE id=? AND document_id=?',
+                               (page_id, document_id))
+            db.execute('DELETE FROM settings WHERE key=?', (key,))
             db.execute('UPDATE documents SET trashed_at=? WHERE id=?', (_stamp() if trashed else None, document_id))
             self._touch(db, document_id)
             saved = self._document(db, db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone())
@@ -499,6 +761,17 @@ class DocumentLibrary:
 
     def restore(self, document_id, expected_updated_at=None):
         return self._set_trash(document_id, False, expected_updated_at)
+
+    def trash_snapshot(self):
+        """Capture identities and versions before an irreversible confirmation."""
+        documents = {d['id']: d['updated_at'] for d in self.list_documents(trashed=True)}
+        pages = {p['id']: self.get_document(p['document_id'])['updated_at']
+                 for p in self.deleted_pages() if p['document_id'] not in documents}
+        return {'documents': documents, 'pages': pages}
+
+    def purge_trash(self, snapshot):
+        from services.library_trash import purge_trash
+        return purge_trash(self, snapshot)
 
     @staticmethod
     def _output(row):

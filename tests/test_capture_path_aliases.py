@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from PIL import Image
+from services import capture_paths
 from services.capture_store import CaptureStore
 
 
@@ -188,10 +189,10 @@ class CapturePathAliasTests(unittest.TestCase):
     def test_root_junction_replacement_before_resolution_is_rejected(self):
         outside = self.root / 'outside'
         outside.mkdir()
-        real_resolve, real_check = Path.resolve, Path.is_junction
+        real_resolve, real_check = Path.resolve, capture_paths._is_reparse
         with patch.object(Path, 'resolve', autospec=True,
                 side_effect=lambda path, strict=False: outside if path == self.inbox else real_resolve(path, strict=strict)), patch.object(
-                Path, 'is_junction', autospec=True, side_effect=lambda path: path == self.inbox or real_check(path)):
+                capture_paths, '_is_reparse', side_effect=lambda path, value: path == self.inbox or real_check(path, value)):
             with self.assertRaises(ValueError):
                 self.store._owned_path('new.png')
         self.assertEqual(list(outside.iterdir()), [])
@@ -199,10 +200,10 @@ class CapturePathAliasTests(unittest.TestCase):
     def test_ancestor_junction_replacement_before_resolution_is_rejected(self):
         outside = self.root / 'outside'
         outside.mkdir()
-        real_resolve, real_check = Path.resolve, Path.is_junction
+        real_resolve, real_check = Path.resolve, capture_paths._is_reparse
         with patch.object(Path, 'resolve', autospec=True,
                 side_effect=lambda path, strict=False: outside if path == self.inbox else real_resolve(path, strict=strict)), patch.object(
-                Path, 'is_junction', autospec=True, side_effect=lambda path: path == self.inbox.parent or real_check(path)):
+                capture_paths, '_is_reparse', side_effect=lambda path, value: path == self.inbox.parent or real_check(path, value)):
             with self.assertRaises(ValueError):
                 self.store._owned_path('new.png')
         self.assertEqual(list(outside.iterdir()), [])

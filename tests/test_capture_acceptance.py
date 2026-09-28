@@ -185,10 +185,15 @@ class CaptureAcceptanceTests(unittest.TestCase):
         self.assertTrue(self.app.open_document(document_id))
         self.app.attributes('-alpha', 0.0)
         self.app.deiconify()
-        self.app.geometry('720x560')
+        self.app.geometry('720x680')
         self.app.editor_tabs.select(self.app.text_panel)
         self.app.update()
-        self.assertEqual((self.app.winfo_width(), self.app.winfo_height()), (720, 560))
+        self.assertEqual((self.app.winfo_width(), self.app.winfo_height()), (720, 680))
+        # Image documents now enter compact layout with the original visible.
+        if self.app._compact_image:
+            self.assertTrue(self.app.image_view.canvas.winfo_ismapped())
+            self.app.toggle_compact_view()
+            self.app.update()
 
         def inside(widget):
             self.assertTrue(widget.winfo_ismapped(), str(widget))
@@ -226,7 +231,9 @@ class CaptureAcceptanceTests(unittest.TestCase):
         self.app.update()
         inside(self.app.image_view.canvas)
         for button in self.buttons(self.app.image_view):
-            inside(button)
+            if not self.app._layout_compact:
+                inside(button)
+        inside(self.app.source_editor)
         self.app.toggle_compact_view()
         self.app.editor_tabs.select(self.app.ai_panel)
         self.app.update()

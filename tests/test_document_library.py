@@ -350,7 +350,7 @@ class DocumentLibraryTests(unittest.TestCase):
 
         class FailFinalVersion(sqlite3.Connection):
             def execute(self, sql, *args, **kwargs):
-                if sql.strip().upper() == 'PRAGMA USER_VERSION=3':
+                if sql.strip().upper() == 'PRAGMA USER_VERSION=4':
                     raise sqlite3.OperationalError('synthetic final migration failure')
                 return super().execute(sql, *args, **kwargs)
 

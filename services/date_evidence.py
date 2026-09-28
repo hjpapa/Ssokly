@@ -1,6 +1,7 @@
 """Date surface normalization and source-based schedules; no current-year guessing."""
 from dataclasses import dataclass
 from datetime import date
+from typing import Optional
 import re
 
 DATE = re.compile(r'(?<![\d.])(?:(?P<y>\d{4})\s*[년./-]\s*)?(?P<m>\d{1,2})\s*[월./-]\s*(?P<d>\d{1,2})(?:\s*일|\.(?!\d)|(?=\s|\(|$|~|～|–|부터|까지))')
@@ -16,7 +17,7 @@ WEEKDAYS = '월화수목금토일'
 
 @dataclass
 class DateMention:
-    year: int | None
+    year: Optional[int]
     month: int
     day: int
     times: tuple

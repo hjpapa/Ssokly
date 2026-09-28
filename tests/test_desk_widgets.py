@@ -200,6 +200,9 @@ class DeskWidgetTests(unittest.TestCase):
 
     def test_inline_ragged_long_row_copies_exact_values_at_narrow_width(self):
         copied = Mock()
+        # Tk 8.6 on Python 3.9 computes Treeview scroll fractions only when mapped.
+        self.root.attributes('-alpha', 0)
+        self.root.deiconify()
         view = InlineTableView(self.root, on_copy=copied)
         self.layout(view, 240, 300)
         long_cell = '합성 긴 안내 ' * 200

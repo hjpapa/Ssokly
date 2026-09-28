@@ -31,7 +31,9 @@ class RegionSelector:
 
         self.overlay = tk.Toplevel(parent)
         self.overlay.overrideredirect(True)
-        self.overlay.geometry(f"{width}x{height}{left:+d}{top:+d}")
+        # A leading '-' in Tk geometry anchors to the right/bottom edge.
+        # '+-N' instead preserves an absolute negative virtual-screen origin.
+        self.overlay.geometry(f"{width}x{height}+{left}+{top}")
         self.overlay.attributes("-alpha", 0.25)
         self.overlay.attributes("-topmost", True)
         self.overlay.configure(bg="black")

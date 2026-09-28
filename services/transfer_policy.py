@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import json
 import sqlite3
-from typing import Iterable
+from typing import Iterable, Optional, Union
 import uuid
 
 from PIL import Image, ImageDraw, ImageOps
@@ -112,7 +112,7 @@ class TransferPolicy:
         self.guard_text(text, strict=False)
         return replace(self, approved_text=text)
 
-    def guard_text(self, text: str, *, strict: bool | None = None) -> str:
+    def guard_text(self, text: str, *, strict: Optional[bool] = None) -> str:
         normalized = _normalized(text)
         for length, digest in self.protected:
             if any(sha256(normalized[i:i + length].encode("utf-8")).hexdigest() == digest
@@ -202,14 +202,14 @@ class TransferSnapshot:
 
 class TransferPolicyStore:
     """Local scope metadata only; corrupt/unreadable policies fail closed."""
-    def __init__(self, app_data_dir: Path | str):
+    def __init__(self, app_data_dir: Union[Path, str]):
         directory = Path(app_data_dir)
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / "transfer_policies.sqlite3"
         with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute("CREATE TABLE IF NOT EXISTS transfer_policies (scope_key TEXT PRIMARY KEY, policy_json TEXT NOT NULL)")
 
-    def get(self, key: str) -> TransferPolicy | None:
+    def get(self, key: str) -> Optional[TransferPolicy]:
         with closing(sqlite3.connect(self.path)) as connection, connection:
             row = connection.execute("SELECT policy_json FROM transfer_policies WHERE scope_key = ?", (key,)).fetchone()
         return TransferPolicy.from_dict(json.loads(row[0])) if row else None
@@ -233,9 +233,9 @@ class TransferPolicyStore:
             connection.execute("INSERT INTO transfer_policies(scope_key, policy_json) VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET policy_json = excluded.policy_json", (key, serialized))
 
 
-def make_text_snapshot(text: str, *, original_text: str | None = None,
+def make_text_snapshot(text: str, *, original_text: Optional[str] = None,
                        excluded_strings: Iterable[str] = (),
-                       previous: TransferPolicy | None = None) -> TransferSnapshot:
+                       previous: Optional[TransferPolicy] = None) -> TransferSnapshot:
     """Create an outbound string, protecting removed/replaced original spans."""
     excluded = list(excluded_strings)
     if original_text is not None and original_text != text:
@@ -310,7 +310,7 @@ def restore_image_snapshot(image: Image.Image, policy: TransferPolicy) -> Transf
     return replace(restored, policy=policy)
 
 
-def make_file_snapshot(path: Path | str) -> TransferSnapshot:
+def make_file_snapshot(path: Union[Path, str]) -> TransferSnapshot:
     source = Path(path)
     if source.stat().st_size > MAX_FILE_BYTES:
         raise ValueError("첨부 파일이 50MB를 초과합니다.")

@@ -1,5 +1,6 @@
 """Explicit transmission-copy selection with local text/pixel redaction."""
 from pathlib import Path
+from typing import Optional, Union
 import math
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -13,10 +14,10 @@ from services.transfer_policy import (
 
 
 def choose_transfer(parent, *, kind: str, text: str = "", image=None,
-                    path: Path | str | None = None,
-                    previous: TransferPolicy | None = None,
-                    image_previous: TransferPolicy | None = None,
-                    title: str = "AI 전송 대상 확인") -> TransferSnapshot | None:
+                    path: Optional[Union[Path, str]] = None,
+                    previous: Optional[TransferPolicy] = None,
+                    image_previous: Optional[TransferPolicy] = None,
+                    title: str = "AI 전송 대상 확인") -> Optional[TransferSnapshot]:
     """Return only an explicitly approved immutable copy, or None on cancel.
 
     For files without local text extraction, masking uses user-provided text or

@@ -286,7 +286,11 @@ class CaptureDeskTests(unittest.TestCase):
         with patch.object(self.app, 'winfo_width', return_value=720):
             self.app._apply_layout()
         self.assertTrue(self.app._layout_compact)
-        self.assertEqual(tuple(map(str, self.app.work_split.panes())), (str(self.app.editor_panel),))
+        self.assertEqual(tuple(map(str, self.app.work_split.panes())), (str(self.app.image_panel), str(self.app.editor_panel)))
+        _lmin, _lwidth, image_min, editor_min = self.app._layout_metrics()
+        available = min(self.app.workspace.winfo_width() - 10, 720 - 40)
+        self.assertEqual(str(self.app.work_split.cget('orient')),
+                         'horizontal' if available >= image_min + editor_min + 16 else 'vertical')
         self.assertNotIn(str(self.app.library_panel), tuple(map(str, self.app.main_split.panes())))
         with patch.object(self.app, 'winfo_width', return_value=720):
             self.app.toggle_library()
@@ -295,9 +299,11 @@ class CaptureDeskTests(unittest.TestCase):
             self.assertNotIn(str(self.app.library_panel), tuple(map(str, self.app.main_split.panes())))
         with patch.object(self.app, 'winfo_width', return_value=720):
             self.app.toggle_compact_view()
-        self.assertEqual(tuple(map(str, self.app.work_split.panes())), (str(self.app.image_panel),))
-        self.app.geometry('1280x800')
-        with patch.object(self.app, 'winfo_width', return_value=1280):
+        self.assertEqual(tuple(map(str, self.app.work_split.panes())), (str(self.app.image_panel), str(self.app.editor_panel)))
+        _library_min, library_width, image_min, editor_min = self.app._layout_metrics()
+        wide_width = max(1280, library_width + image_min + editor_min + 100)
+        self.app.geometry(f'{wide_width}x800')
+        with patch.object(self.app, 'winfo_width', return_value=wide_width):
             self.app._apply_layout()
         self.assertFalse(self.app._layout_compact)
         self.assertEqual(tuple(map(str, self.app.work_split.panes())),
@@ -329,7 +335,7 @@ class CaptureDeskTests(unittest.TestCase):
                     yield child
                 yield from buttons(child)
 
-        for geometry, expected in (('720x600', (720, 600)), ('1280x800', (1280, 800))):
+        for geometry, expected in (('720x680', (720, 680)), ('1280x800', (1280, 800))):
             with self.subTest(geometry=geometry):
                 self.app.geometry(geometry)
                 self.app.editor_tabs.select(self.app.text_panel)
@@ -351,16 +357,23 @@ class CaptureDeskTests(unittest.TestCase):
                     self.app.editor_tabs.select(self.app.text_panel)
                     self.app.toggle_library()
                     self.app.update()
-                    for widget in (self.app.document_tree, self.app.view_button, self.app.read_button):
+                    for widget in (self.app.document_tree,):
                         with self.subTest(compact_library_widget=str(widget)):
                             within_root(widget)
+                    if str(self.app.workspace) in tuple(map(str, self.app.main_split.panes())):
+                        within_root(self.app.view_button)
+                        within_root(self.app.read_button)
+                    else:
+                        self.assertEqual(tuple(map(str, self.app.main_split.panes())), (str(self.app.library_panel),))
                     self.app.toggle_library()
                     self.app.toggle_compact_view()
                     self.app.update()
                     within_root(self.app.image_view.canvas)
                     for button in buttons(self.app.image_view):
                         with self.subTest(image_button=button['text']):
-                            within_root(button)
+                            if not self.app._layout_compact:
+                                within_root(button)
+                    within_root(self.app.source_editor)
                     self.app.toggle_compact_view()
         self.app.withdraw()
 

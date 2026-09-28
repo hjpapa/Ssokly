@@ -256,7 +256,7 @@ class CaptureStore:
             try:
                 if candidate.is_symlink() or (hasattr(candidate, 'is_junction') and candidate.is_junction()):
                     continue
-                before = candidate.stat(follow_symlinks=False)
+                before = candidate.lstat()
                 if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
                     continue
                 owned = self._owned_path(candidate.name)
@@ -276,7 +276,7 @@ class CaptureStore:
                 with Image.open(owned) as image:
                     image.load()
                 byte_size, digest = _file_metadata(owned)
-                after = candidate.stat(follow_symlinks=False)
+                after = candidate.lstat()
                 identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
                 if (identity(before) != identity(after) or not stat.S_ISREG(after.st_mode)
                         or after.st_nlink != 1 or candidate.is_symlink() or self._owned_path(candidate.name) != owned):
