@@ -218,7 +218,6 @@ class ManagementUiTests(unittest.TestCase):
             page = self.app.accept_capture(image, auto_read=False)
         self.app.geometry('720x700')
         self.app.update()
-        self.app._compact_image = False
         self.app._apply_layout()
         self.app.update()
         self.app.open_document(page['document_id'])

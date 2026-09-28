@@ -5,9 +5,10 @@ from pathlib import Path
 import tempfile
 from typing import Any, Optional, Union
 
+from services.app_paths import default_app_data_dir as _default_app_data_dir
+
 
 SETTINGS_VERSION = 1
-APP_DIRECTORY_NAME = "Ssokly"
 SETTINGS_FILENAME = "settings.json"
 MIN_OPACITY_PERCENT = 92
 MAX_OPACITY_PERCENT = 100
@@ -132,15 +133,6 @@ class WindowSettingsStore:
                 except OSError:
                     pass
             raise
-
-
-def _default_app_data_dir() -> Path:
-    local_app_data = os.getenv("LOCALAPPDATA", "").strip()
-    if local_app_data:
-        return (Path(local_app_data).expanduser() / APP_DIRECTORY_NAME).resolve(
-            strict=False
-        )
-    return (Path.home() / ".ssokly").resolve(strict=False)
 
 
 def _safe_bool(value: Any, *, default: bool) -> bool:

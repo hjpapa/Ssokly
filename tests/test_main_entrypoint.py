@@ -22,6 +22,16 @@ class MainEntrypointTests(unittest.TestCase):
         self.assertIn('ui.capture_desk', imports)
         self.assertNotIn('ui.app', imports)
 
+    def test_unavailable_storage_is_reported_without_silent_new_library(self):
+        import main
+        with patch.object(main, '_enable_windows_dpi_awareness'), \
+                patch.object(main, 'CaptureDeskApp', side_effect=OSError('합성 저장 장치 오류')) as app, \
+                patch('tkinter.Tk') as root, patch('tkinter.messagebox.showerror') as show:
+            main.main()
+        app.assert_called_once_with()
+        show.assert_called_once()
+        root.return_value.destroy.assert_called_once_with()
+
 
 if __name__ == '__main__':
     unittest.main()

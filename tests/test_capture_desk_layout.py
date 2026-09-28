@@ -70,9 +70,6 @@ class CaptureDeskLayoutTests(unittest.TestCase):
                     app.update()
                     for widget in (app.capture_button, app.add_button, app.library_button):
                         self.assert_visible(widget)
-                    if app._layout_compact and not app._compact_image:
-                        app.toggle_compact_view()
-                        app.update()
                     self.assert_visible(app.image_view.canvas, min_width=250)
                     self.assertEqual(app.image_view.image_size, (900, 600))
                     if not app._layout_compact:
@@ -150,12 +147,11 @@ class CaptureDeskLayoutTests(unittest.TestCase):
         app = self.create_app(2.0)
         app.geometry('720x800')
         app.update()
-        self.assertFalse(app._compact_image)
         with Image.new('RGB', (650, 450), 'white') as image:
             page = app.accept_capture(image, auto_read=False)
         app.update()
         self.assertIsNotNone(page)
-        self.assertTrue(app._compact_image)
+        self.assertTrue(app.image_view.canvas.winfo_ismapped())
         self.assertFalse(app._compact_library)
         self.assert_visible(app.image_view.canvas, min_width=500)
         self.assertEqual(app.image_view.image_size, (650, 450))

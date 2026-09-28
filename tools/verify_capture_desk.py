@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 SUITES = (
     'tests.test_main_entrypoint',
+    'tests.test_capture_location',
     'tests.test_library_management',
     'tests.test_library_trash',
     'tests.test_capture_manager',

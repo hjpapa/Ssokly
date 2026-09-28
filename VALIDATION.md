@@ -4,6 +4,18 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## 저장 위치·중복 코드 정리 — 2026-09-28 / 09
+
+- `python tools/verify_capture_desk.py --all`: **657개 통과**, 213.103초. 실패/오류/건너뜀/통신 시도 0. 마지막 설정 포인터 적용 순서 조정과 시작 오류 안내 검사 추가 전 수집·실행 결과이며, 해당 최종 경로는 아래 집중 15개로 재검증. 기존 Tk 종료 시 ThemeChanged 경고는 남음.
+
+- Windows/Python 3.9.7, 합성 이미지·임시 AppData·임시 리디렉션 바탕화면 사용. 실제 사용자 캡처 폴더를 생성하거나 이동하지 않음. 유료 API 호출 없음.
+- 초기 `python -m unittest tests.test_capture_location tests.test_settings_store tests.test_task_store tests.test_main_entrypoint -v`: **36개 통과**, 2.442초.
+- 설정 적용을 DB/임시 파일 정리 이후로 옮긴 뒤 `python -m unittest tests.test_capture_location -q`: **12개 통과**, 3.636초.
+- 시작 오류 안내 검사 추가 후 `python -m unittest tests.test_capture_location tests.test_main_entrypoint -q`: **15개 통과**, 3.420초. 신규 기본 앱이 합성 바탕화면 폴더를 만들고 종료·재열기하는 실제 Tk 경로 포함.
+- 확인: 기존 설치 위치 유지, 설정된 경로 재사용, 등록된 이미지 복사와 SHA-256 확인, SQLite 백업/무결성, 원본 유지, 문서/수정본/최초 OCR/라벨/메모/휴지통 연결 유지. 비어 있지 않거나 상하위인 대상 폴더 거절, 손상 이미지/복사 실패/설정 실패 시 기존 설정 보존. 설정 저장 실패 시 검증된 복사본이 새 폴더에 남을 수 있음.
+- 경로 계산은 EXE/현재 작업 디렉터리에 의존하지 않으며 Windows 바탕화면은 shell API로 조회함. 실제 EXE 빌드·배포, 타 PC의 권한·네트워크 드라이브·AppData 가상화, 실제 디스크 부족 및 다중 실행 경쟁 상황은 미검증. 폴더 변경 안내에서 다른 Ssokly 창을 닫도록 표시.
+- Python 3.9 AST **101개 파일**, 문서 로컬 링크·공백 검사 통과. 기존 유료 평가 결과를 재실행한 것으로 표시하지 않음.
+
 ## 디자인·재실행·실제 모델 평가 — 2026-09-28 / 08
 
 - Windows/Python 3.9.7: `python tools/verify_capture_desk.py --all` **643개 통과**, 274.513초. 실패/오류/건너뜀/통신 시도 0. 임시 자료·합성 이미지·mock API, 소켓 차단. 새 좌표 검사 2개 및 마지막 검색 안내 줄바꿈 조정 전 결과이며 아래 집중 검사를 후속 수행.

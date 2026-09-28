@@ -14,6 +14,7 @@ from uuid import UUID, uuid4, uuid5
 
 from PIL import Image
 
+from services.app_paths import default_app_data_dir
 from services.capture_paths import owned_capture_path
 
 
@@ -34,12 +35,7 @@ CaptureIdentifier = Union[str, Iterable[str]]
 
 
 def _default_store_dir() -> Path:
-    local_app_data = os.getenv("LOCALAPPDATA", "").strip()
-    if local_app_data:
-        root = Path(local_app_data).expanduser() / APP_DIRECTORY_NAME
-    else:
-        root = Path.home() / ".ssokly"
-    return (root / CAPTURE_INBOX_DIRECTORY_NAME).resolve(strict=False)
+    return default_app_data_dir() / CAPTURE_INBOX_DIRECTORY_NAME
 
 
 def _legacy_store_dir() -> Path:

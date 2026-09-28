@@ -189,11 +189,7 @@ class CaptureAcceptanceTests(unittest.TestCase):
         self.app.editor_tabs.select(self.app.text_panel)
         self.app.update()
         self.assertEqual((self.app.winfo_width(), self.app.winfo_height()), (720, 680))
-        # Image documents now enter compact layout with the original visible.
-        if self.app._compact_image:
-            self.assertTrue(self.app.image_view.canvas.winfo_ismapped())
-            self.app.toggle_compact_view()
-            self.app.update()
+        self.assertTrue(self.app.image_view.canvas.winfo_ismapped())
 
         def inside(widget):
             self.assertTrue(widget.winfo_ismapped(), str(widget))

@@ -9,9 +9,10 @@ import sqlite3
 from typing import Any, Iterator, Literal, Optional, Union
 from uuid import uuid4
 
+from services.app_paths import default_app_data_dir as _default_app_data_dir
+
 
 SCHEMA_VERSION = 1
-APP_DIRECTORY_NAME = "Ssokly"
 DATABASE_FILENAME = "ssokly.db"
 CAPTURES_DIRECTORY_NAME = "captures"
 TASK_COLUMNS = (
@@ -528,15 +529,6 @@ class TaskStore:
             raise RuntimeError(
                 "task database has an incompatible tasks table and was not upgraded"
             )
-
-
-def _default_app_data_dir() -> Path:
-    local_app_data = os.getenv("LOCALAPPDATA", "").strip()
-    if local_app_data:
-        return (Path(local_app_data).expanduser() / APP_DIRECTORY_NAME).resolve(
-            strict=False
-        )
-    return (Path.home() / ".ssokly").resolve(strict=False)
 
 
 def _utc_now() -> datetime:

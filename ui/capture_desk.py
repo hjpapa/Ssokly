@@ -3,6 +3,7 @@ import hashlib
 import os
 from pathlib import Path
 import queue
+import sqlite3
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
@@ -11,6 +12,9 @@ from uuid import uuid4
 from PIL import Image
 
 from services.capture_service import capture_selected_region
+from services.app_paths import default_app_data_dir
+from services.capture_location import CaptureLocation
+from services.capture_store import CaptureStore
 from services.document_library import DocumentLibrary, LibraryConflictError
 from services.document_service import attachment_kind, mime_type_for, read_hwpx_file, read_text_file
 from services.source_review import highlight_source
@@ -25,10 +29,13 @@ def fingerprint(text):
 class CaptureDeskApp(tk.Tk):
     """All widget and persistence changes run on Tk's thread, never a worker."""
     def __init__(self, *, library=None, app_data_dir=None):
+        root = Path(app_data_dir) if app_data_dir is not None else default_app_data_dir()
+        self._capture_location = CaptureLocation(root) if library is None and app_data_dir is None else None
+        if library is None:
+            captures = CaptureStore(self._capture_location.resolve()) if self._capture_location else None
+            library = DocumentLibrary(root, capture_store=captures)
+        self.library = library
         super().__init__()
-        local_data = os.getenv('LOCALAPPDATA', '').strip()
-        root = Path(app_data_dir) if app_data_dir else (Path(local_data) / 'Ssokly' if local_data else Path.home() / '.ssokly')
-        self.library = library or DocumentLibrary(root)
         self.document = None
         self.page = None
         self.page_records = []
@@ -45,7 +52,6 @@ class CaptureDeskApp(tk.Tk):
         self._results = queue.Queue()
         self._library_requested = True
         self._compact_library = False
-        self._compact_image = False
         self._layout_compact = None
         self._layout_id = None
         self._reset_main_sash = True
@@ -54,7 +60,6 @@ class CaptureDeskApp(tk.Tk):
         self.title('Ssokly · 캡처와 텍스트')
         self.geometry('1280x800')
         self.minsize(720, 680)
-        self.configure(bg='#f5f7f8')
         apply_theme(self)
         self._build_ui()
         self.thumbnails = ThumbnailCache(self)
@@ -84,6 +89,7 @@ class CaptureDeskApp(tk.Tk):
         menu = tk.Menu(self, tearoff=False)
         menu.add_command(label='새 텍스트 문서', command=self.new_text_document)
         menu.add_command(label='캡처 관리 · 전체 이미지', command=self.show_capture_manager)
+        menu.add_command(label='캡처 저장 폴더 설정', command=self.show_capture_location)
         menu.add_command(label='기존 기록 보기', command=self.show_legacy_records)
         menu.add_command(label='원래 인식 내용 보기', command=self.show_original_text)
         menu.add_command(label='이전 AI 결과', command=self.show_output_history)
@@ -413,7 +419,6 @@ class CaptureDeskApp(tk.Tk):
         self._show_recovery_warning()
         if self._is_compact():
             self._compact_library = False
-            self._compact_image = bool(self.page and self.page.get('path'))
             self._apply_layout()
         return True
 
@@ -1331,7 +1336,6 @@ class CaptureDeskApp(tk.Tk):
             self.open_document(doc['id'])
             self._load_page(next(i for i, value in enumerate(self.page_records) if value['id'] == page['id']))
             if self._is_compact():
-                self._compact_image = True
                 self._compact_library = False
                 self._apply_layout()
             self.status.set('캡처를 보관했습니다.')
@@ -1616,11 +1620,68 @@ class CaptureDeskApp(tk.Tk):
         self.page_records = fresh
         self._load_page(index)
 
+    def show_capture_location(self):
+        dialog = tk.Toplevel(self)
+        dialog.title('캡처 저장 폴더')
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=18)
+        body.pack(fill='both', expand=True)
+        ttk.Label(body, text='캡처 이미지와 OCR 정보', font=('Malgun Gothic', 11, 'bold')).pack(anchor='w')
+        ttk.Label(body, text=str(self.library.capture_store.directory), wraplength=520, padding=(0, 8)).pack(anchor='w')
+        ttk.Label(body, text='폴더를 변경하면 기존 캡처를 복사하고 앱을 종료합니다.\n다시 실행하면 새 위치를 사용합니다. 이전 원본은 그대로 남습니다.\n문서·라벨·메모와 AI 전송 설정은 기존 앱 데이터에 보존됩니다.',
+                  wraplength=520).pack(anchor='w')
+        actions = ttk.Frame(body, padding=(0, 14, 0, 0))
+        actions.pack(fill='x')
+        if os.name == 'nt':
+            def open_folder():
+                try:
+                    os.startfile(str(self.library.capture_store.directory))
+                except OSError:
+                    messagebox.showerror('폴더 열기 실패', '저장 장치 연결과 폴더 위치를 확인하세요.', parent=dialog)
+            ttk.Button(actions, text='폴더 열기', command=open_folder).pack(side='left')
+        ttk.Button(actions, text='저장 폴더 변경…', command=self.change_capture_location,
+                   state='normal' if self._capture_location else 'disabled').pack(side='left', padx=6)
+        ttk.Button(actions, text='닫기', command=dialog.destroy).pack(side='right')
+        return dialog
+
+    def change_capture_location(self):
+        if self._capture_location is None:
+            return False
+        if self._jobs:
+            messagebox.showinfo('처리 중', 'OCR·AI 처리가 끝난 뒤 저장 폴더를 변경하세요.', parent=self)
+            return False
+        if not self.flush_edits():
+            return False
+        selected = filedialog.askdirectory(title='캡처를 복사할 빈 폴더 선택',
+                                          initialdir=str(self.library.capture_store.directory.parent), parent=self)
+        if not selected:
+            return False
+        if not messagebox.askyesno('캡처 저장 위치 변경',
+                '다른 Ssokly 창을 모두 닫아 주세요.\n기존 캡처를 아래 폴더에 복사하고 이 앱도 종료합니다.\n'
+                '다시 실행하면 새 위치를 사용하며 이전 원본은 남습니다.\n\n' + selected, parent=self):
+            return False
+        try:
+            changed = self._capture_location.relocate(self.library.capture_store, selected)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            messagebox.showerror('폴더 변경 실패',
+                '기존 위치를 계속 사용합니다. 빈 폴더·남은 공간·파일 상태를 확인하세요.\n'
+                '새 폴더에 복사본이 남아 있을 수 있습니다.\n\n' + str(error), parent=self)
+            return False
+        if changed:
+            # Edits were flushed before copying. Do not perform another write
+            # to the old capture store after publishing the new location.
+            self._finish_close()
+        return changed
+
     def close(self):
         if not self.flush_edits():
             return False
         if self._jobs and not messagebox.askyesno('처리 중', '처리를 취소하고 닫을까요? 이미 보관한 원본과 저장한 텍스트는 남습니다.', parent=self):
             return False
+        return self._finish_close()
+
+    def _finish_close(self):
         self._closing = True
         self.cancel_jobs()
         for callback in (self._poll_id, self._autosave_id, self._refresh_id, self._layout_id):
@@ -1632,7 +1693,3 @@ class CaptureDeskApp(tk.Tk):
         self.thumbnails.clear()
         self.destroy()
         return True
-
-
-if __name__ == '__main__':
-    CaptureDeskApp().mainloop()
