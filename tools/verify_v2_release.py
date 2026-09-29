@@ -20,9 +20,8 @@ SUITES = (
     'tests.test_table_schedule_context', 'tests.test_hwpx_structure',
     'tests.test_source_review', 'tests.test_source_tables_ui',
     'tests.test_card_outputs', 'tests.test_public_audience', 'tests.test_source_schedule_fallback',
-    'tests.test_work_card_store', 'tests.test_work_cards_ui', 'tests.test_storage_faults',
+    'tests.test_work_card_store', 'tests.test_storage_faults',
     'tests.test_transfer_policy', 'tests.test_v2_transfer_integration',
-    'tests.test_v2_app_flow',
 )
 
 

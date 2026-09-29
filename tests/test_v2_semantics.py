@@ -1,10 +1,8 @@
 """V2 A02-A06: synthetic local contracts, no live API or real documents."""
 import unittest
 from pydantic import ValidationError
-from services.analysis_document import (Action, AnalysisDocument, FieldEvidence, action_card_data,
-                                         assess_conditions, scope_notice, strict_schema, verify_evidence)
-from services.date_evidence import date_mentions, date_status, source_schedules, supported_deadline
-from services.source_contract import FieldRefs, SourceAction, SourceDocument, SourceRef, resolve_action
+from services.analysis_document import Action, AnalysisDocument, FieldEvidence, action_card_data, assess_conditions, scope_notice, verify_evidence
+from services.date_evidence import date_mentions, date_status, supported_deadline
 from services.source_review import review_spans, highlight_source
 from unittest.mock import MagicMock
 
@@ -66,18 +64,6 @@ class V2SemanticsTests(unittest.TestCase):
         self.assertEqual(tags.count('source_date'), 2)
         self.assertEqual(tags.count('source_review'), 1)
 
-    def test_a03_table_event_and_cell_ref_remain_distinct(self):
-        source = '항목\t경제 프로그램\t과학 프로그램\n신청\t2026. 10. 15.\t2026. 10. 16.\n행사\t2026. 10. 20.\t2026. 10. 21.'
-        refs = FieldRefs(owner=SourceRef(line=0,cell=0), deadline=SourceRef(line=2,cell=2),
-                         event_date=SourceRef(line=3,cell=2), deliverable=SourceRef(line=0,cell=0),
-                         destination=SourceRef(line=0,cell=0))
-        wire = SourceAction(**(action(deadline='2026. 10. 15.', event_date='2026. 10. 20.').model_dump()
-                              | {'evidence': {'line':2,'cell':1}, 'field_evidence':refs.model_dump()}))
-        result = resolve_action(wire, source)
-        self.assertEqual(result.field_evidence.deadline, '2026. 10. 15.')
-        self.assertEqual(result.field_evidence.event_date, '2026. 10. 20.')
-        self.assertIn(('과학 프로그램 · 신청', '2026. 10. 16.'), source_schedules(source))
-
     def test_a03_conflicting_dates_do_not_select_a_favorite(self):
         quote = '신청 기한: 본문 2026. 10. 15. / 붙임 2026. 10. 16.'
         item = action(deadline='2026-10-15', field_evidence=FieldEvidence(deadline=quote))
@@ -122,25 +108,11 @@ class V2SemanticsTests(unittest.TestCase):
         self.assertEqual(card['deadline'], '2026-10-15')
         self.assertEqual(card['obligation'], '판단 유보')
 
-    def test_a06_fabricated_page_number_not_accepted_by_contract(self):
-        with self.assertRaises(ValidationError):
-            SourceRef(line=1, cell=0, page=99)
-        self.assertEqual(SourceRef(line=0, cell=0).model_dump(), {'line':0,'cell':0})
-
     def test_a06_duplicate_quote_is_not_presented_as_unique_location(self):
         item = action(deadline='10. 15.', field_evidence=FieldEvidence(deadline='10. 15.'))
         card = action_card_data(item, item.evidence + '\n10. 15.\n10. 15.')
         self.assertEqual(len(card['fields']['deadline']['locations']), 2)
         self.assertIn('여러 위치', '\n'.join(card['field_issues']['deadline']))
-
-    def test_schema_requires_new_wire_fields_but_old_records_still_load(self):
-        old = action()
-        self.assertEqual(old.target, '')
-        self.assertEqual(old.obligation, '판단 유보')
-        schema = strict_schema(SourceDocument)
-        definition = schema['$defs']['SourceAction']
-        for field in ('target','condition','obligation','deadline','event_date','report_date'):
-            self.assertIn(field, definition['required'])
 
     def test_legacy_verifier_uses_each_date_quote_and_card_keeps_unknown_values(self):
         quote = '모든 학교는 프로그램 신청서를 제출한다.'

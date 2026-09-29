@@ -1,6 +1,6 @@
 # Ssokly 작업 상태와 기록
 
-최종 갱신: 2026-09-29 (/04 중계 서버 제한 없음 유지·프로토타입 키 검사만 추가, 운영 미배포) · 현재 상태: 제출용 대기 UX·작은 창 보완 완료. 전체 오프라인 회귀 684개, 서버 13개 통과. 종료·재열기 및 소스 ZIP 시작/종료 검증 완료. 큰 이미지 비공개 업로드는 기존 운영 배포 유지. 이번 작업은 2026-09-29 / 01 기록 참조.
+최종 갱신: 2026-09-29 (/05 구형 코드 13개 모듈·전용 테스트 삭제, 전체 519개 통과, main 게시) · 현재 상태: 제출용 대기 UX·작은 창 보완 완료. 전체 오프라인 회귀 684개, 서버 13개 통과. 종료·재열기 및 소스 ZIP 시작/종료 검증 완료. 큰 이미지 비공개 업로드는 기존 운영 배포 유지. 이번 작업은 2026-09-29 / 01 기록 참조.
 
 이전 게시 상태(2026-09-17): 문서별 라벨·메모와 자료 라이브러리 검색·필터·목록 UI 보완을 커밋해 GitHub `main`에 게시. 합성/mock 전체 594개, 통신 차단 209개 통과(최종 목록 문구 조정 전), 최종 Tk 집중 24개 통과. 기존 미커밋 개선안 문서 삭제는 커밋에서 제외했으며 사용자 자료·백업·키·전송 설정을 보존. EXE 배포는 수행하지 않음.
 
@@ -57,6 +57,16 @@
 후속 후보 목록은 외부 전송·유료 시험·새 기능·배포를 자동 승인하지 않는다.
 
 ## 작업 이력
+
+### 2026-09-29 / 05 · 사용하지 않는 구형 코드·문서 삭제
+
+- 요청: 점검 4번(불필요한 코드)을 다시 점검하고 필요 없으면 삭제.
+- 점검 방법: `main.py`에서 import를 따라가 실제 앱이 불러오는 모듈을 계산. `services`/`ui`의 13개 모듈이 어디서도 불러오지 않음을 확인. 과거 할 일 DB는 `legacy_reader.py`가 자체 SQL로 읽으므로 모듈 삭제와 무관함을 확인.
+- 삭제: `ui/app.py`(4,612줄), `ui/work_cards.py`, `ui/source_tables.py`, `services/ai_service.py`, `analysis_cache.py`, `analysis_review.py`, `diagram_service.py`, `local_ocr.py`, `personal_todos.py`, `settings_store.py`, `source_contract.py`, `workflow_service.py`, `workspace_state.py`. 이 모듈 전용 도구 `tools/benchmark_ocr.py`, `verify_context_review.py`, `verify_date_tables.py`, `verify_release.py`. 대체된 카드 흐름 지시서 `SSOKLY_IMPROVEMENT_V2.md`. 호출처가 없는 함수 `strict_schema`, `labels_for`, `render_card_item`.
+- 테스트: 삭제 모듈 전용 테스트 파일 8개 삭제. 살아 있는 코드와 섞인 10개 파일은 삭제 모듈을 쓰는 테스트만 제거(살아 있는 `date_evidence`, `source_review`, `analysis_document`, `work_card_store` 검사는 유지). `tools/verify_v2_release.py` 목록과 README 개발 안내 갱신.
+- 보존: 사용자 AppData의 과거 DB·설정 파일은 건드리지 않음(README 표에 "사용하지 않지만 보존"으로 명시). `ocr_service`·`text_actions`의 서버 주소 미설정 시 직접 호출 경로는 개발용 평가 도구가 쓰므로 유지.
+- 검증: 아래 VALIDATION 2026-09-29 / 05 참조. 전체 519개·v2 게이트 155개 통과.
+- 남은 과제: `analysis_document.py`의 `AnalysisDocument`·`render_document`·`action_card_data`·`verify_evidence`, `card_outputs.render_current_cards` 등은 앱에서 호출하지 않고 테스트만 참조함. 과거 카드 흐름 로직으로 보이며 추가 삭제는 사용자 결정 후 진행. 사용자 요청으로 커밋해 GitHub `main`에 푸시.
 
 ### 2026-09-29 / 04 · 중계 서버 제한 없음으로 되돌림
 

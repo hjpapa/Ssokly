@@ -95,16 +95,6 @@ def evidence_record(quote, text, document_id, source_version, selected_locations
     }
 
 
-def render_card_item(card):
-    from services.card_outputs import current_value
-    values = {name: current_value(card, name) for name in CARD_FIELDS}
-    details = [f'{FIELD_LABELS[name]}: {values[name]}' for name in CARD_FIELDS
-               if name != 'action' and values[name]]
-    if card.get('source_stale'):
-        details.append('원문 변경 · 이전 근거 재확인 필요')
-    return '\n'.join([values['action'] or '업무 내용 미지정', *details])
-
-
 def _review_signature(fields):
     return hashlib.sha256(_json({name: bool(field['confirmed']) for name, field in fields.items()}).encode()).hexdigest()
 

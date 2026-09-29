@@ -6,8 +6,6 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 from services.analysis_document import Action, AnalysisDocument, render_document, verify_evidence, partial_actions
-from services.analysis_cache import AnalysisCache
-from services.ai_service import analyze_document_task
 
 SOURCE = "담임은 9월 30일까지 계획서를 교무실에 제출한다."
 
@@ -45,21 +43,6 @@ class AnalysisPipelineTests(unittest.TestCase):
         self.assertIn("도서관", checked.message)
         self.assertTrue(checked.questions)
 
-    def test_school_templates_and_copy_exclude_internal_facts(self):
-        from services.workflow_service import extract_section
-        doc = sample()
-        doc.message = "학부모님 안녕하세요. 9월 30일까지 신청해 주세요."
-        for mode in ("학부모 메신저", "가정통신문 초안"):
-            output = render_document(doc, mode)
-            self.assertNotIn("교무실", output)
-            self.assertIn(doc.message, extract_section(output, "message"))
-            self.assertNotIn("발송 전 확인", extract_section(output, "message"))
-        self.assertIn("- [ ]", render_document(doc, "내 업무 일정·할 일"))
-
-    def test_parent_cache_is_separate_from_internal_and_other_parent_format(self):
-        self.assertEqual(len({AnalysisCache.key(SOURCE, "담임", "gpt-5-nano", mode)
-                             for mode in ("internal", "학부모 메신저", "가정통신문 초안")}), 3)
-
     def test_empty_parent_message_requires_review(self):
         doc = sample()
         doc.message = ""
@@ -85,49 +68,3 @@ class AnalysisPipelineTests(unittest.TestCase):
         stop = payload.index('"questions"')
         self.assertEqual(len(partial_actions(payload[:stop])), 1)
         self.assertEqual(partial_actions(payload[:payload.index('"evidence"')]), [])
-
-    def test_cache_invalidates_on_source_role_and_model(self):
-        keys = {AnalysisCache.key(SOURCE, "담임", "model"), AnalysisCache.key(SOURCE+"수정", "담임", "model"), AnalysisCache.key(SOURCE, "부장", "model"), AnalysisCache.key(SOURCE, "담임", "other")}
-        self.assertEqual(len(keys), 4)
-
-    def test_stream_and_cache_reuse_without_second_api_call(self):
-        wire = sample().model_dump()
-        wire['actions'][0]['evidence'] = {'line': 1, 'cell': 0}
-        wire['actions'][0]['field_evidence'] = {f: {'line': 1, 'cell': 0} for f in ('owner','deadline','deliverable','destination')}
-        payload = json.dumps(wire)
-        stream = MagicMock()
-        stream.__enter__.return_value = stream
-        stream.__iter__.return_value = iter([SimpleNamespace(type="response.output_text.delta", delta=payload)])
-        stream.get_final_response.return_value = SimpleNamespace(status="completed", output_text=payload)
-        client = MagicMock()
-        client.__enter__.return_value = client
-        client.responses.stream.return_value = stream
-        previews, metrics = [], []
-        with tempfile.TemporaryDirectory() as directory, patch("openai.OpenAI", return_value=client), patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
-            first = analyze_document_task(SOURCE, role="담임", model="gpt-5.6-luna", on_preview=previews.append, cache_dir=directory, raise_errors=True)
-            second = analyze_document_task(SOURCE, "일정 확인표", role="행정실", model="gpt-5.6-luna", cache_dir=directory, on_metrics=metrics.append, raise_errors=True)
-            self.assertIn("## 체크리스트", first)
-            self.assertNotIn("## 업무 순서", second)
-            self.assertTrue(previews)
-            self.assertTrue(metrics[0]["cached"])
-            client.responses.stream.assert_called_once()
-            self.assertNotIn("담당 역할:", client.responses.stream.call_args.kwargs['input'])
-
-    def test_incomplete_stream_never_cached(self):
-        stream = MagicMock()
-        stream.__enter__.return_value = stream
-        stream.get_final_response.return_value = SimpleNamespace(status="incomplete")
-        client = MagicMock()
-        client.__enter__.return_value = client
-        client.responses.stream.return_value = stream
-        with tempfile.TemporaryDirectory() as directory, patch("openai.OpenAI", return_value=client), patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
-            with self.assertRaisesRegex(RuntimeError, "완성되지"):
-                analyze_document_task(SOURCE, model="gpt-5.6-luna", cache_dir=directory, raise_errors=True)
-            self.assertIsNone(AnalysisCache(directory).get(AnalysisCache.key(SOURCE, "전체 담당자", "gpt-5.6-luna")))
-
-    def test_cancelled_analysis_does_not_call_api(self):
-        event = threading.Event()
-        event.set()
-        with patch("openai.OpenAI") as client, self.assertRaisesRegex(RuntimeError, "취소"):
-            analyze_document_task(SOURCE, cancel_event=event, raise_errors=True)
-        client.assert_not_called()

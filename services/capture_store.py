@@ -1178,10 +1178,6 @@ class CaptureStore:
                 )
 
 
-def labels_for(records: Iterable[CaptureRecord]) -> list[str]:
-    return [record.label for record in records]
-
-
 def _capture_ids(value: CaptureIdentifier) -> list[str]:
     values = [value] if isinstance(value, str) else list(value)
     if not values:

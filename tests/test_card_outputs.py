@@ -4,9 +4,7 @@ import unittest
 
 from services.analysis_document import Action, FieldEvidence, action_card_data
 from services.card_outputs import current_value, render_current_cards
-from services.personal_todos import PersonalTodoStore
 from services.work_card_store import WorkCardStore
-from services.personal_todos import checklist_items
 
 
 class CardOutputTests(unittest.TestCase):
@@ -14,7 +12,6 @@ class CardOutputTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.store = WorkCardStore(self.temp.name)
-        self.todos = PersonalTodoStore(self.temp.name, self.store)
 
     def create(self, document_id='synthetic', **changes):
         source = '\n'.join([
@@ -34,18 +31,6 @@ class CardOutputTests(unittest.TestCase):
         action = Action(**data)
         self.store.ensure_document(document_id, source)
         return self.store.merge_analysis(document_id, [action_card_data(action, source)])[0]
-
-    def test_a01_teacher_date_matches_linked_todo_and_new_draft(self):
-        card = self.create()
-        self.todos.add_cards([card])
-        edited = self.store.update_card(card['id'], {'deadline': '2026. 10. 16.'}, card['version'])
-        reopened = WorkCardStore(self.temp.name).get_card(card['id'])
-        output = render_current_cards([reopened], '교직원 메신저')
-        todo = self.todos.list()[0]['item']
-        self.assertIn('제출 기한: 2026. 10. 16.', output)
-        self.assertIn('제출 기한: 2026. 10. 16.', todo)
-        self.assertNotIn('2026. 10. 15.', output)
-        self.assertEqual(current_value(edited, 'deadline'), '2026. 10. 16.')
 
     def test_a07_explicit_deleted_deadline_is_not_reintroduced_into_output(self):
         card = self.create()
@@ -122,33 +107,6 @@ class CardOutputTests(unittest.TestCase):
         card = self.store.update_card(card['id'], {'destination': '내부 결재 담당 행정실'}, card['version'])
         self.assertNotIn('내부 결재 담당 행정실', render_current_cards([card], '학부모 메신저'))
 
-    def test_external_reference_proposed_and_pending_are_not_school_checkboxes(self):
-        base = self.create()
-        import copy
-        cards = [base]
-        for index, (task_type, obligation, title) in enumerate([
-            ('외부 기관 업무', '필수', '교육청 명단 발표'),
-            ('참고 일정', '안내', '행사 일정 참고'),
-            ('학교 업무', '추가 제안', '개인 준비 제안'),
-            ('학교 업무', '판단 유보', '붙임 확인 대기'),
-        ]):
-            item = copy.deepcopy(base)
-            item['id'] = 'synthetic-' + str(index)
-            item['ai_proposal']['task_type'] = task_type
-            item['fields']['action'].update(value=title, edited=True)
-            item['fields']['obligation'].update(value=obligation, edited=True)
-            cards.append(item)
-        output = render_current_cards(cards, '업무 일정·체크리스트')
-        items = checklist_items(output)
-        self.assertEqual(len(items), 1)
-        self.assertIn('프로그램 신청서 제출', items[0])
-        self.assertIn('## 참고 일정·외부 기관 안내', output)
-        self.assertIn('교육청 명단 발표', output)
-        self.assertIn('## 추가 제안 · 공문상 의무 아님', output)
-        self.assertIn('개인 준비 제안', output)
-        self.assertIn('## 판단 유보 · 확인 후 적용', output)
-        self.assertIn('붙임 확인 대기', output)
-
     def _date_case(self, raw, *, action_text='신청서 제출'):
         source = '모든 학교는 신청서를 제출한다.\n신청 기한: ' + raw
         action = Action(action=action_text, owner='', deadline=raw, deliverable='', destination='',
@@ -156,27 +114,6 @@ class CardOutputTests(unittest.TestCase):
             field_evidence=FieldEvidence(deadline=source.splitlines()[1]))
         self.store.ensure_document('date-case', source)
         return self.store.merge_analysis('date-case', [action_card_data(action, source)])[0]
-
-    def test_missing_year_keeps_original_date_and_action_checkbox_with_warning(self):
-        card = self._date_case('10월 2일까지')
-        output = render_current_cards([card], '업무 일정·체크리스트')
-        self.assertIn('10월 2일까지 [확인 필요: 연도 미지정]', output)
-        self.assertNotIn('2026', output)
-        self.assertEqual(len(checklist_items(output)), 1)
-
-    def test_relative_deadline_keeps_expression_without_invented_base_or_blocking_action(self):
-        card = self._date_case('행사 3일 전')
-        output = render_current_cards([card], '업무 일정·체크리스트')
-        self.assertIn('행사 3일 전 [확인 필요: 상대 기한: 기준일 확인 필요]', output)
-        self.assertEqual(len(checklist_items(output)), 1)
-
-    def test_weekday_conflict_preserves_surface_but_is_not_ready_checkbox(self):
-        card = self._date_case('2026. 10. 17.(금)')
-        output = render_current_cards([card], '업무 일정·체크리스트')
-        self.assertIn('2026. 10. 17.(금)', output)
-        self.assertIn('원문 금요일 / 달력 토요일', output)
-        self.assertIn('## 판단 유보 · 확인 후 적용', output)
-        self.assertEqual(checklist_items(output), [])
 
     def test_ai_action_date_does_not_restore_teacher_cleared_or_changed_deadline(self):
         card = self._date_case('2026. 10. 15.', action_text='2026. 10. 15.까지 신청서 제출')
@@ -195,15 +132,6 @@ class CardOutputTests(unittest.TestCase):
         teacher_text = '2026. 10. 16. 설명회 후 직접 안내'
         card = self.store.update_card(card['id'], {'action': teacher_text}, card['version'])
         self.assertEqual(current_value(card, 'action'), teacher_text)
-
-    def test_confirmed_ai_action_does_not_restore_old_separate_deadline(self):
-        card = self._date_case('2026. 10. 15.', action_text='2026. 10. 15.까지 신청서 제출')
-        self.todos.add_cards([card])
-        card = self.store.confirm_fields(card['id'], ['action'], card['version'])
-        card = self.store.update_card(card['id'], {'deadline': ''}, card['version'])
-        self.assertTrue(card['fields']['action']['confirmed'])
-        self.assertNotIn('2026. 10. 15.', render_current_cards([card], '교직원 메신저'))
-        self.assertNotIn('2026. 10. 15.', self.todos.list()[0]['item'])
 
 
 if __name__ == '__main__':

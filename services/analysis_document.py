@@ -89,24 +89,6 @@ def review_parent_draft(draft):
         draft.questions.append("연락처·식별정보를 가렸습니다. 공개 가능한 학교 연락처인지 확인 후 입력하세요.")
     return draft
 
-def strict_schema(model):
-    """Keep old local records readable, but require every field on the wire."""
-    schema = model.model_json_schema()
-    def visit(node):
-        if isinstance(node, dict):
-            node.pop('default', None)
-            if node.get('type') == 'object':
-                node.get('properties', {}).pop('evidence_locations', None)
-                node['required'] = list(node.get('properties', {}))
-                node['additionalProperties'] = False
-            for value in node.values():
-                visit(value)
-        elif isinstance(node, list):
-            for value in node:
-                visit(value)
-    visit(schema)
-    return schema
-
 def _normalized(text):
     # Preserve cell and paragraph boundaries; ignore only horizontal spaces.
     return re.sub(r'[^\S\n\t]+', '', text.replace('\r\n', '\n')).strip()

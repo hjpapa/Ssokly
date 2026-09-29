@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from services.transfer_policy import ScopeExpansionRequired, TransferPolicyStore, make_text_snapshot
 from services.work_card_store import WorkCardStore
-from services.workspace_state import WorkspaceStateStore
 
 
 class StorageFaultTests(unittest.TestCase):
@@ -69,16 +68,6 @@ class StorageFaultTests(unittest.TestCase):
         self.assertEqual(WorkCardStore(self.temp.name).list_artifacts('synthetic-doc'), [])
         with closing(sqlite3.connect(self.store.path)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM artifact_reviews').fetchone()[0], 0)
-
-    def test_workspace_failed_replacement_preserves_previous_pointer_on_restart(self):
-        state = WorkspaceStateStore(self.temp.name)
-        state.update('synthetic-doc', artifact_id='old-draft', source_version=1)
-        with closing(sqlite3.connect(state.path)) as db, db:
-            db.execute("CREATE TRIGGER reject_pointer BEFORE INSERT ON workspace_state BEGIN SELECT RAISE(ABORT,'synthetic pointer write'); END")
-        with self.assertRaisesRegex(sqlite3.IntegrityError, 'pointer write'):
-            state.update('synthetic-doc', artifact_id='new-draft', source_version=2)
-        self.assertEqual(WorkspaceStateStore(self.temp.name).get('synthetic-doc'),
-                         {'artifact_id': 'old-draft', 'source_version': 1})
 
     def test_transfer_failed_replacement_preserves_guarded_scope_on_restart(self):
         policies = TransferPolicyStore(self.temp.name)

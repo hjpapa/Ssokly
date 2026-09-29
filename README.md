@@ -158,7 +158,7 @@ Windows 앱 가상화에서는 AppData의 실제 위치가 실행 환경에 따�
 | `ssokly.db` | 기존 업무와 호환 문서 ID. 새 페이지 본문은 위 저장소에서 관리 |
 | `transfer_policies.sqlite3` | 전송 범위·가림 좌표·제외 문자열 지문 |
 | `work_cards.sqlite3`, `personal_todos.sqlite3` | 과거 카드·초안·할 일. 새 화면에서 생성·갱신하지 않음 |
-| `captures`, `analysis_cache.sqlite3`, `workspace_state.sqlite3`, `settings.json` | 기존 자료·캐시·연결·창 설정 보존 |
+| `captures`, `analysis_cache.sqlite3`, `workspace_state.sqlite3`, `settings.json` | 과거 화면이 만든 자료. 현재 앱은 사용하지 않지만 삭제하지 않고 보존 |
 
 구조 변경은 가산 방식이며 업그레이드 전 SQLite 백업(`*.before-*.bak`)을 만듭니다. 최신 DB를 매번 백업하지 않습니다. 여러 DB의 작업이 하나의 원자적 트랜잭션은 아니므로 실패한 문서 연결은 개별 캡처/기존 기록으로 남을 수 있습니다. 다른 PC에서 GitHub 코드만 가져와서는 키나 로컬 자료가 복원되지 않습니다. 앱을 닫고 데이터 폴더 전체를 안전하게 백업하세요.
 
@@ -177,7 +177,6 @@ Responses 요청은 `store=False`를 사용하지만 모든 서버 보관의 부
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -q
 .\.venv\Scripts\python.exe tools/verify_capture_desk.py
-.\.venv\Scripts\python.exe tools/verify_release.py
 .\.venv\Scripts\python.exe tools/verify_v2_release.py
 .\.venv\Scripts\python.exe -m pip check
 ```
@@ -189,4 +188,4 @@ Responses 요청은 `store=False`를 사용하지만 모든 서버 보관의 부
 - `services/document_library.py`: 문서/페이지/결과 저장 계층.
 - `services/text_actions.py`, `desk_transfer.py`: 카드 없는 AI 정리·전송 보호.
 - `services/legacy_reader.py`: 기존 기록 읽기 전용 열람.
-- 기존 OCR·파일 읽기·날짜 검수·캡처 저장을 재사용합니다. `ui/app.py`와 카드·할 일·도식화 코드는 호환/회귀용으로 남으며 기본 화면에서는 사용하지 않습니다.
+- 기존 OCR·파일 읽기·날짜 검수·캡처 저장을 재사용합니다. 과거 카드 중심 화면(`ui/app.py`)과 할 일·도식화·창 설정 코드는 제거했습니다. 기존 `work_cards.sqlite3`·`personal_todos.sqlite3` 자료는 `legacy_reader.py`로 읽기 전용 열람만 합니다.
