@@ -88,7 +88,11 @@ class LayoutMixin:
                 chrome = (self.editor_tabs.winfo_reqheight() - tab_height
                           + self.text_panel.winfo_reqheight() - self.source_editor.winfo_reqheight())
                 page_bar = self._page_bar.winfo_reqheight()
-                content_min = min(100, max(24, (extent - page_bar - chrome - 12) // 2))
+                if self.editor_tabs.select() == str(self.ai_panel):
+                    chrome = (self.editor_tabs.winfo_reqheight() - tab_height
+                              + self.ai_panel.winfo_reqheight() - self.output_editor.winfo_reqheight())
+                content_target = 70 if self.editor_tabs.select() == str(self.ai_panel) else 100
+                content_min = min(content_target, max(24, (extent - page_bar - chrome - 12) // 2))
                 editor_height = chrome + content_min
                 upper = extent - editor_height - 7
                 image_chrome = self.image_view.winfo_height() - self.image_view.canvas.winfo_height()
@@ -115,6 +119,12 @@ class LayoutMixin:
         return True
 
     def _apply_layout(self, *, schedule=True):
+        # Above 150%, preserve the chosen font size and grow the minimum
+        # window so controls cannot consume both reading surfaces entirely.
+        factor = max(1.0, float(self.winfo_fpixels('1i')) / 144.0)
+        minimum = (round(720 * factor), round(680 * factor))
+        if self.minsize() != minimum:
+            self.minsize(*minimum)
         if self.document and self.document.get('readonly') and not self.document.get('trashed'):
             if not self.adopt_button.winfo_manager():
                 self.adopt_button.pack(side='right', padx=5)

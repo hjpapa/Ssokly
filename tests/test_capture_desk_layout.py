@@ -14,6 +14,32 @@ from ui.capture_desk import CaptureDeskApp
 
 
 class CaptureDeskLayoutTests(unittest.TestCase):
+    def test_notice_tab_reserves_both_original_and_result_at_minimum_size(self):
+        app = self.create_app(2.0)
+        app.geometry('720x680')
+        app.ai_mode.set('안내문')
+        app._ai_mode_changed()
+        app.editor_tabs.select(app.ai_panel)
+        app.update()
+        self.assertGreaterEqual(app.image_view.canvas.winfo_height(), 100)
+        self.assertGreaterEqual(app.output_editor.winfo_height(), 70)
+        self.assert_visible(app.audience_picker)
+        self.assert_visible(app.generate_button)
+
+    def test_extreme_dpi_minimum_preserves_font_scale_and_working_surfaces(self):
+        for scaling in (2.67, 4.0):
+            app = self.create_app(scaling)
+            app.geometry('720x680')
+            app.toggle_details()
+            app.update()
+            with self.subTest(scaling=scaling):
+                self.assertGreater(app.winfo_height(), 680)
+                self.assertAlmostEqual(float(app.tk.call('tk', 'scaling')), scaling, delta=.02)
+                self.assertGreaterEqual(app.image_view.canvas.winfo_height(), 100)
+                self.assertGreaterEqual(app.source_editor.winfo_height(), 70)
+                self.assert_visible(app.title_entry)
+                self.assert_visible(app.labels_entry)
+
     def test_minimum_window_at_150_percent_keeps_original_readable(self):
         app = self.create_app(2.0)  # 144 dpi / 72 points: Windows 150%.
         app.geometry('720x680')

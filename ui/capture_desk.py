@@ -550,6 +550,7 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
             self.copy_text(self.library.document_text(self.document['id']))
 
     def _tab_changed(self, _event=None):
+        self._schedule_layout()
         if self.editor_tabs.select() == str(self.table_panel):
             self.table_view.set_text(self.source_editor.get('1.0', 'end-1c'))
 

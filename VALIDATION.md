@@ -4,6 +4,32 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## 운영 Vercel·가상 공문 10개·UI 평가 — 2026-09-29 / 08
+
+사용자 승인 후 운영 배포 및 유료 합성 검증. 상세 사례·완성도·미검증 범위는 [APP_EVALUATION.md](APP_EVALUATION.md). 실제 사용자 문서·DB·키를 평가 자료로 사용하지 않음.
+
+| 검증 | 최종 결과 |
+| --- | --- |
+| `.venv/Scripts/python.exe tools/verify_capture_desk.py --all` | **530개 통과**, 184.600초. 실패/오류/건너뜀/통신 시도 0. 528개에서 화면 회귀 2개 추가. 직전 실행도 530개·197.320초 통과 |
+| `.venv/Scripts/python.exe tools/verify_v2_release.py` | **155개 통과**, 3.537초. 실패/오류/건너뜀/통신 시도 0 |
+| `.venv/Scripts/python.exe tools/verify_reopen_flow.py` | passed true, 캡처 3개·독립 프로세스 2개, 종료 직전 수정/라벨/메모/검색/이미지 재열기 통과 |
+| backend에서 `node --test test/*.test.js` | **15개 통과**, 602.784ms. 직전 루트 경로 실행도 같은 15개 통과 |
+| `python -m unittest tests.test_text_actions tests.test_ai_relay -q` | 최종 지시문 **27개 통과**, 1.103초. export 후 bundle 일치·직접/중계 경로 계약 확인 |
+| `python tools/evaluate_desk_usability.py --output .local-results/usability/final.json` | **192개 조합, 기준 위반 0개**. 초기 58개. 모의 배율 100~300%, 실제 적용 크기를 별도 기록 |
+| `python tools/evaluate_official_documents.py --live ...` | 최초 OCR 10+요약 10, OCR 재사용 요약 10씩 2회. **총 40회 모두 HTTP 200·완료**. 최종 원본→OCR→요약 핵심 기준 8/10건 충족 |
+| `python tools/verify_official_document_flow.py --ocr-report ... --summary-report ...` | 실제 합성 결과 **10건** 이미지/OCR/요약 저장·새 앱 재열기·표시 일치·검색·휴지통/복원 통과. 네트워크 차단·유료 0회 |
+| `.venv/Scripts/python.exe -m pip check` | 의존성 오류 없음 |
+
+위 Python 명령은 프로젝트 가상환경 Python으로 실행했다. 최종 Tk 게이트에 ThemeChanged 종료 오류 없음. 배율 검사는 OS 설정을 바꾸지 않는 Tk 모의 검사이며 모든 모니터 지원을 보장하지 않는다. 실제 3840×2160, 2560×1440 모니터에 합성 최소 창을 각각 열고 관찰했다. 화면 간 드래그는 도구 경계 제한으로 미실행. 실제 전송 확인 창 버튼 등 /07 검증과 새 검증 범위를 혼동하지 않는다.
+
+운영 최종 배포 `dpl_2n8F4zrfxqKAPBxHebAoxUL8mU7o` READY·운영 별칭 연결 확인. 처음 CLI 인증 실패는 사용자 로그인으로 해결했다. 서버 인증·횟수·크기·길이 제한 추가 없음. 로컬 API 키 미접근을 강제한 상태로 중계 호출, 자동 재시도 없음. 토큰·실제 비용은 응답에 없어 미측정.
+
+실제 품질: 첫 응답에서 대상 설정·지시문 설명·연도 누락·없는 분류명 등 확인, 지시문 보완 후 같은 OCR 입력을 두 번 재검증했다. 최종 표본에서 대상 설정·학교 내·입력란 추가는 재현되지 않음. **03 오독과 04 표 손상/날짜 연결/원문 없는 연도 보충은 남음**. OCR 최종 성공률이나 일반 정확도 100%로 표시하지 않는다. 발췌 중심이라 짧은 공문 압축률도 낮다. 실물 스캔·손글씨·큰 이미지 Blob 실전·동시 부하·EXE·새 PC는 미검증.
+
+평가 파일은 `.local-results/official-evaluation/{production-20260929,summary-recheck,final-summary}` 및 `.local-results/usability`에 로컬 보존하며 커밋하지 않는다. fixture와 도구·집계/판단 문서만 공유한다.
+
+변경 Python 파일 compileall, 평가기의 줄바꿈 대상 노출 검사, 앱/서버 프롬프트 bundle 일치, README/STATUS/VALIDATION/APP_EVALUATION 로컬 링크 및 `git diff --check` 통과. Git LF/CRLF 안내는 공백 오류와 구분한다.
+
 ## 요약·목록·최소 창·오류 로그·Tk 종료 — 2026-09-29 / 07
 
 합성 문자열·이미지·임시 DB·mock 요청 사용. 실제 유료 API **0회**. 운영 서버 배포·제출 ZIP 생성 없음. OpenAI 중계/직접 호출 경로 및 서버의 제한 없음 정책 유지.
