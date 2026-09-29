@@ -183,7 +183,8 @@ Responses 요청은 `store=False`를 사용하지만 모든 서버 보관의 부
 
 `verify_capture_desk.py`는 통신을 차단하고 임시 저장소로 새 화면·전송·복구 계약을 검사합니다. 실패·건너뜀·통신 시도는 실패로 판정하며 유료 옵션이 없습니다. 기존 도구는 과거 기능 호환을 검사합니다. 일부 과거 도구의 `--live`/`--cloud`는 유료 API를 호출하므로 명시적 승인 없이 사용하지 마세요.
 
-- `ui/capture_desk.py`: 독립 주 화면·자동 저장·응답 보호.
+- `ui/capture_desk.py`: 독립 주 화면·자동 저장·응답 보호. 기능별 메서드는 `ui/desk_library.py`(보관함·휴지통·라벨·쪽 정리), `ui/desk_layout.py`(화면 배치·읽기 전용 보기), `ui/desk_jobs.py`(캡처·파일 가져오기·OCR/AI 작업)에 나누어 두고 `CaptureDeskApp`이 함께 상속합니다.
+- `services/capture_store.py`: 캡처 이미지·메타데이터 저장. 기록 모델·공용 함수는 `capture_records.py`, 스키마 생성·업그레이드는 `capture_schema.py`에 있으며 기존 import 경로는 그대로 사용할 수 있습니다.
 - `ui/desk_widgets.py`: 이미지 뷰·인라인 표·썸네일 캐시.
 - `services/document_library.py`: 문서/페이지/결과 저장 계층.
 - `services/text_actions.py`, `desk_transfer.py`: 카드 없는 AI 정리·전송 보호.

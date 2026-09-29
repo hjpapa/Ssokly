@@ -1,21 +1,31 @@
-from contextlib import closing, contextmanager
-from dataclasses import dataclass
+"""Capture image storage and metadata. Record model/helpers live in capture_records,
+schema creation/upgrade in capture_schema; both are re-exported here for existing callers."""
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-import hashlib
-import os
 from pathlib import Path
 import re
 import shutil
 import sqlite3
 import stat
 import tempfile
-from typing import Iterable, Iterator, Literal, Optional, Union
+from typing import Iterator, Optional
 from uuid import UUID, uuid4, uuid5
 
 from PIL import Image
 
 from services.app_paths import default_app_data_dir
 from services.capture_paths import owned_capture_path
+from services.capture_records import (  # noqa: F401 - OCRStatus is re-exported
+    CaptureConflictError, CaptureIdentifier, CaptureLinkedError, CaptureNotFoundError, CaptureRecord,
+    CaptureStoreError, LinkFilter, OCRStatus,
+)
+# Helpers are imported by name so tests can patch services.capture_store._file_metadata.
+from services.capture_records import (
+    _capture_ids, _datetime_from_text, _datetime_to_text, _escape_like, _file_metadata, _legacy_source,
+    _next_datetime_text, _normalized_source, _required_identifier, _required_string,
+    _safe_filename_component, _text_sha256, _utc_now, _validated_datetime_text, _verified_image_size,
+)
+from services.capture_schema import METADATA_SCHEMA_VERSION, CaptureSchemaMixin  # noqa: F401 - re-exported
 
 
 MAX_STORED_CAPTURES = 8
@@ -23,15 +33,10 @@ PNG_CAPTURE_COMPRESS_LEVEL = 3
 APP_DIRECTORY_NAME = "Ssokly"
 CAPTURE_INBOX_DIRECTORY_NAME = "capture_inbox"
 METADATA_DATABASE_FILENAME = "capture_inbox.sqlite3"
-METADATA_SCHEMA_VERSION = 2
 LEGACY_IMPORT_NAMESPACE = UUID("4431e221-6dc9-4fc8-8efb-f61b26972d39")
 _UUID_FILENAME = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
 _CAPTURE_FILENAME = re.compile(r'(?P<stamp>\d{8}_\d{6}_\d{6})_(?P<id>' + _UUID_FILENAME + r')_(?P<source>[0-9A-Za-z가-힣_-]{1,32})\.png')
 _LEGACY_FILENAME = re.compile(r'legacy_(?P<id>' + _UUID_FILENAME + r')\.png')
-
-OCRStatus = Literal["unread", "ready", "failed"]
-LinkFilter = Literal["unclassified", "linked", "all"]
-CaptureIdentifier = Union[str, Iterable[str]]
 
 
 def _default_store_dir() -> Path:
@@ -51,85 +56,7 @@ DEFAULT_STORE_DIR = _default_store_dir()
 LEGACY_STORE_DIR = _legacy_store_dir()
 
 
-@dataclass(frozen=True)
-class CaptureRecord:
-    # path and created_at stay first so existing positional construction remains
-    # source compatible.
-    path: Path
-    created_at: datetime
-    id: str = ""
-    source: str = "capture"
-    width: int = 0
-    height: int = 0
-    byte_size: int = 0
-    content_sha256: str = ""
-    ocr_status: OCRStatus = "unread"
-    ocr_text: str = ""
-    ocr_error: str = ""
-    ocr_profile: str = ""
-    verified_text: str = ""
-    verified_at: Optional[datetime] = None
-    verified_ocr_sha256: str = ""
-    linked_task_ids: tuple[str, ...] = ()
-    trashed_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-    @property
-    def label(self) -> str:
-        created_at = (
-            self.created_at.astimezone()
-            if self.created_at.tzinfo is not None
-            else self.created_at
-        )
-        return f"{created_at:%m/%d %H:%M}  {self.source or 'capture'}"
-
-    @property
-    def ocr_preview(self) -> str:
-        for line in self.effective_text.splitlines():
-            preview = line.strip()
-            if preview:
-                return preview[:120]
-        return ""
-
-    @property
-    def effective_text(self) -> str:
-        """Return the teacher-verified text when one exists, otherwise raw OCR."""
-        return self.verified_text if self.verified_at is not None else self.ocr_text
-
-    @property
-    def is_verified(self) -> bool:
-        return self.verified_at is not None
-
-    @property
-    def review_status(self) -> str:
-        if not self.is_verified:
-            return "unverified"
-        if self.verified_ocr_sha256 == _text_sha256(self.ocr_text):
-            return "verified"
-        return "ocr_updated"
-
-    @property
-    def is_linked(self) -> bool:
-        return bool(self.linked_task_ids)
-
-
-class CaptureStoreError(RuntimeError):
-    """Base error for capture inbox operations."""
-
-
-class CaptureNotFoundError(CaptureStoreError):
-    """Raised when a requested capture no longer exists."""
-
-
-class CaptureConflictError(CaptureStoreError):
-    """Raised when another app instance changed a capture first."""
-
-
-class CaptureLinkedError(CaptureStoreError):
-    """Raised when a linked capture is requested for trash or purge."""
-
-
-class CaptureStore:
+class CaptureStore(CaptureSchemaMixin):
     """Persistent, lossless capture inbox with SQLite sidecar metadata.
 
     The legacy save/list_recent/load/delete surface is intentionally retained.
@@ -780,107 +707,6 @@ class CaptureStore:
             ).fetchone()[0]
         return int(value)
 
-    def _initialize_schema(self) -> None:
-        with self._connection() as connection:
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version > METADATA_SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"capture metadata version {version} is newer than supported "
-                    f"version {METADATA_SCHEMA_VERSION}"
-                )
-            if version == 0:
-                existing = connection.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type = 'table' AND name = 'capture_items'"
-                ).fetchone()
-                if existing is not None:
-                    raise RuntimeError(
-                        "capture metadata has an unversioned incompatible schema"
-                    )
-                connection.executescript(
-                    """
-                    CREATE TABLE capture_items (
-                        id TEXT PRIMARY KEY,
-                        storage_name TEXT NOT NULL UNIQUE,
-                        source TEXT NOT NULL,
-                        width INTEGER NOT NULL CHECK (width > 0),
-                        height INTEGER NOT NULL CHECK (height > 0),
-                        byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
-                        content_sha256 TEXT NOT NULL,
-                        ocr_status TEXT NOT NULL DEFAULT 'unread'
-                            CHECK (ocr_status IN ('unread', 'ready', 'failed')),
-                        ocr_text TEXT NOT NULL DEFAULT '',
-                        ocr_error TEXT NOT NULL DEFAULT '',
-                        ocr_profile TEXT NOT NULL DEFAULT '',
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        trashed_at TEXT,
-                        verified_text TEXT NOT NULL DEFAULT '',
-                        verified_at TEXT,
-                        verified_ocr_sha256 TEXT NOT NULL DEFAULT ''
-                    );
-
-                    CREATE TABLE capture_links (
-                        capture_id TEXT NOT NULL
-                            REFERENCES capture_items(id) ON DELETE CASCADE,
-                        task_id TEXT NOT NULL,
-                        linked_at TEXT NOT NULL,
-                        PRIMARY KEY (capture_id, task_id)
-                    );
-
-                    CREATE TABLE legacy_imports (
-                        legacy_key TEXT PRIMARY KEY,
-                        capture_id TEXT NOT NULL
-                            REFERENCES capture_items(id) ON DELETE CASCADE
-                    );
-
-                    CREATE INDEX idx_capture_items_active_created
-                    ON capture_items (trashed_at, created_at DESC);
-
-                    CREATE INDEX idx_capture_links_task
-                    ON capture_links (task_id, capture_id);
-
-                    PRAGMA user_version = 2;
-                    """
-                )
-            elif version == 1:
-                connection.execute('BEGIN IMMEDIATE')
-                # Another process can finish an upgrade before this writer lock.
-                current_version = connection.execute('PRAGMA user_version').fetchone()[0]
-                if current_version == METADATA_SCHEMA_VERSION:
-                    self._validate_schema(connection)
-                    return
-                if current_version != 1:
-                    raise RuntimeError('capture metadata version changed before upgrade')
-                self._validate_schema(connection, version=1)
-                self._backup_before_upgrade()
-                connection.execute(
-                    "ALTER TABLE capture_items "
-                    "ADD COLUMN verified_text TEXT NOT NULL DEFAULT ''"
-                )
-                connection.execute(
-                    "ALTER TABLE capture_items ADD COLUMN verified_at TEXT"
-                )
-                connection.execute(
-                    "ALTER TABLE capture_items "
-                    "ADD COLUMN verified_ocr_sha256 TEXT NOT NULL DEFAULT ''"
-                )
-                connection.execute("PRAGMA user_version = 2")
-                self._validate_schema(connection)
-            else:
-                self._validate_schema(connection)
-
-    def _backup_before_upgrade(self) -> Path:
-        """SQLite-consistent backup, completed before any v1 ALTER statement."""
-        backup = self.db_path.with_name(self.db_path.name + '.before-capture-inbox-' + uuid4().hex[:12] + '.bak')
-        pending = backup.with_suffix(backup.suffix + '.pending')
-        # A separate read connection works while the upgrade connection holds
-        # BEGIN IMMEDIATE; backing up that write connection itself can block.
-        with closing(sqlite3.connect(self.db_path)) as source, closing(sqlite3.connect(pending)) as destination:
-            source.backup(destination)
-        pending.replace(backup)
-        return backup
-
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(str(self.db_path), timeout=5.0)
         connection.row_factory = sqlite3.Row
@@ -1134,150 +960,4 @@ class CaptureStore:
         if restore_error is not None:
             raise restore_error
 
-    @staticmethod
-    def _validate_schema(
-        connection: sqlite3.Connection,
-        *,
-        version: int = METADATA_SCHEMA_VERSION,
-    ) -> None:
-        capture_columns = (
-            "id",
-            "storage_name",
-            "source",
-            "width",
-            "height",
-            "byte_size",
-            "content_sha256",
-            "ocr_status",
-            "ocr_text",
-            "ocr_error",
-            "ocr_profile",
-            "created_at",
-            "updated_at",
-            "trashed_at",
-        )
-        if version >= 2:
-            capture_columns += (
-                "verified_text",
-                "verified_at",
-                "verified_ocr_sha256",
-            )
-        expected = {
-            "capture_items": capture_columns,
-            "capture_links": ("capture_id", "task_id", "linked_at"),
-            "legacy_imports": ("legacy_key", "capture_id"),
-        }
-        for table, expected_columns in expected.items():
-            actual_columns = tuple(
-                row["name"]
-                for row in connection.execute(f"PRAGMA table_info({table})")
-            )
-            if actual_columns != expected_columns:
-                raise RuntimeError(
-                    f"capture metadata has an incompatible {table} table"
-                )
 
-
-def _capture_ids(value: CaptureIdentifier) -> list[str]:
-    values = [value] if isinstance(value, str) else list(value)
-    if not values:
-        raise ValueError("at least one capture_id is required")
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for item in values:
-        capture_id = _required_identifier(item, "capture_id")
-        if capture_id not in seen:
-            normalized.append(capture_id)
-            seen.add(capture_id)
-    return normalized
-
-
-def _required_identifier(value: object, field: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{field} must be a string")
-    normalized = value.strip()
-    if not normalized:
-        raise ValueError(f"{field} must not be empty")
-    return normalized
-
-
-def _required_string(value: object, field: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{field} must be a string")
-    return value
-
-
-def _normalized_source(value: object) -> str:
-    source = _required_string(value, "source").strip()
-    return source or "capture"
-
-
-def _safe_filename_component(source: str) -> str:
-    safe_source = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", source).strip("_")
-    return safe_source[:32] or "capture"
-
-
-def _legacy_source(path: Path) -> str:
-    parts = path.stem.split("_", 3)
-    return parts[3] if len(parts) == 4 and parts[3] else "capture"
-
-
-def _verified_image_size(path: Path) -> tuple[int, int]:
-    with Image.open(path) as image:
-        image.verify()
-    with Image.open(path) as image:
-        width, height = image.size
-    if width <= 0 or height <= 0:
-        raise ValueError("capture image has invalid dimensions")
-    return width, height
-
-
-def _file_metadata(path: Path) -> tuple[int, str]:
-    digest = hashlib.sha256()
-    byte_size = 0
-    with path.open("rb") as source:
-        while True:
-            chunk = source.read(1024 * 1024)
-            if not chunk:
-                break
-            byte_size += len(chunk)
-            digest.update(chunk)
-    return byte_size, digest.hexdigest()
-
-
-def _text_sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _datetime_to_text(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat(timespec="microseconds")
-
-
-def _datetime_from_text(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _next_datetime_text(previous_text: str) -> str:
-    """Return a timestamp strictly newer than the previous concurrency token."""
-    now = _utc_now()
-    previous = _datetime_from_text(previous_text)
-    if now <= previous:
-        now = previous + timedelta(microseconds=1)
-    return _datetime_to_text(now)
-
-
-def _validated_datetime_text(value: datetime) -> str:
-    if not isinstance(value, datetime):
-        raise TypeError("expected_updated_at must be a datetime")
-    return _datetime_to_text(value)
-
-
-def _escape_like(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

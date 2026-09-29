@@ -176,7 +176,7 @@ class ManagementUiTests(unittest.TestCase):
         dialog = self.dialog()
         tree = next(w for w in self.widgets(dialog) if isinstance(w, ttk.Treeview))
         tree.selection_set(tree.get_children()[0])
-        with patch('ui.capture_desk.simpledialog.askstring', return_value='연수'):
+        with patch('ui.desk_library.simpledialog.askstring', return_value='연수'):
             self.button(dialog, '선택 라벨 이름 변경').invoke()
         self.assertEqual(self.library.get_document(doc['id'])['labels'], ['연수'])
         self.assertEqual(self.app.labels_var.get(), '연수')

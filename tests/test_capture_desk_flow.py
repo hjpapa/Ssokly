@@ -299,7 +299,7 @@ class CaptureDeskFlowTests(unittest.TestCase):
             self.app._transfer().policy_store.save('document:' + doc['id'], newer)
             return original(*args, **kwargs)
         self.start.side_effect = lambda *args: CaptureDeskApp._start_job(self.app, *args)
-        with patch.object(self.app, '_scope_tokens', side_effect=raced), patch('ui.capture_desk.threading.Thread') as worker:
+        with patch.object(self.app, '_scope_tokens', side_effect=raced), patch('ui.desk_jobs.threading.Thread') as worker:
             self.app.generate()
         worker.assert_not_called()
         self.assertEqual(self.app._jobs, {})
@@ -309,7 +309,7 @@ class CaptureDeskFlowTests(unittest.TestCase):
         doc = self.text_document()
         self.choose.return_value = make_text_snapshot(self.library.document_text(doc['id']))
         self.start.side_effect = lambda *args: CaptureDeskApp._start_job(self.app, *args)
-        with patch('ui.capture_desk.threading.Thread') as worker:
+        with patch('ui.desk_jobs.threading.Thread') as worker:
             self.app.generate()
         worker.assert_called_once()
         newer = make_text_snapshot('더 좁은 사본', excluded_strings=['합성 원문']).policy
@@ -323,14 +323,14 @@ class CaptureDeskFlowTests(unittest.TestCase):
         doc = self.text_document()
         self.choose.return_value = make_text_snapshot(self.library.document_text(doc['id']))
         self.start.side_effect = lambda *args: CaptureDeskApp._start_job(self.app, *args)
-        with patch('ui.capture_desk.threading.Thread') as worker:
+        with patch('ui.desk_jobs.threading.Thread') as worker:
             self.app.generate()
         self.app.cancel_jobs()
         worker.call_args.kwargs['target']()
         self.app._poll_results()
         self.ai.assert_not_called()
         self.assertEqual(self.app._jobs, {})
-        with patch('ui.capture_desk.threading.Thread') as retry:
+        with patch('ui.desk_jobs.threading.Thread') as retry:
             self.app.generate()
         retry.assert_called_once()
 
@@ -338,7 +338,7 @@ class CaptureDeskFlowTests(unittest.TestCase):
         doc = self.text_document()
         self.choose.return_value = make_text_snapshot(self.library.document_text(doc['id']))
         self.start.side_effect = lambda *args: CaptureDeskApp._start_job(self.app, *args)
-        with patch('ui.capture_desk.threading.Thread') as worker:
+        with patch('ui.desk_jobs.threading.Thread') as worker:
             worker.return_value.start.side_effect = RuntimeError('synthetic thread failure')
             self.app.generate()
         self.assertEqual(self.app._jobs, {})
@@ -348,7 +348,7 @@ class CaptureDeskFlowTests(unittest.TestCase):
         doc = self.text_document()
         self.choose.return_value = make_text_snapshot(self.library.document_text(doc['id']))
         self.start.side_effect = lambda *args: CaptureDeskApp._start_job(self.app, *args)
-        with patch('ui.capture_desk.threading.Thread') as worker:
+        with patch('ui.desk_jobs.threading.Thread') as worker:
             self.app.generate()
             self.app.generate()
             worker.assert_called_once()
