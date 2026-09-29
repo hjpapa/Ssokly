@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
-import { readJson, reply } from '../lib/http.js';
+import { authorized, readJson, reply } from '../lib/http.js';
 import { temporaryImages, verifyReceipt } from '../lib/temp-images.js';
 
 const prompts = JSON.parse(readFileSync(new URL('../prompts.json', import.meta.url), 'utf8'));
+
+const MAX_TEXT_CHARS = 200_000;
 
 export function buildRequest(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('invalid');
@@ -25,7 +27,9 @@ export function buildRequest(body) {
   if (body.operation === 'text') {
     if (Object.keys(body).some(k => !['operation', 'text', 'mode', 'audience'].includes(k))) throw Error('invalid');
     if (typeof body.text !== 'string' || !body.text.trim()) throw Error('invalid');
-    const instruction = prompts.actions[body.mode]?.[body.audience];
+    if (body.text.length > MAX_TEXT_CHARS) throw Error('invalid');
+    const group = Object.hasOwn(prompts.actions, body.mode) ? prompts.actions[body.mode] : undefined;
+    const instruction = group && Object.hasOwn(group, body.audience) ? group[body.audience] : undefined;
     if (typeof instruction !== 'string') throw Error('invalid');
     return { ...common, instructions: instruction, reasoning: { effort: 'low' },
       input: [{ role: 'user', content: [{ type: 'input_text', text: body.text }] }] };
@@ -54,6 +58,7 @@ return async function handler(req, res) {
     res.setHeader('Allow', 'POST');
     return reply(res, 405, { error: 'method_not_allowed' });
   }
+  if (!authorized(req)) return reply(res, 401, { error: 'unauthorized' });
   if (!process.env.OPENAI_API_KEY) {
     return reply(res, 503, { error: 'unavailable' });
   }

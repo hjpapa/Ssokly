@@ -39,6 +39,25 @@ def server_url():
     return value.rstrip('/')
 
 
+def server_token():
+    """Optional shared app token from SSOKLY_API_TOKEN or ai-server.json ("token")."""
+    value = os.getenv('SSOKLY_API_TOKEN')
+    if value is None:
+        try:
+            value = json.loads(CONFIG_PATH.read_text(encoding='utf-8')).get('token', '')
+        except (OSError, ValueError, AttributeError):
+            value = ''
+    return value.strip() if isinstance(value, str) else ''
+
+
+def _headers(json_body=False):
+    headers = {'Content-Type': 'application/json'} if json_body else {}
+    token = server_token()
+    if token:
+        headers['X-Ssokly-Token'] = token
+    return headers
+
+
 def request_relay(payload):
     url = server_url()
     if not url:
@@ -50,9 +69,11 @@ def request_relay(payload):
                 response = _large_image_request(client, url, payload)
             else:
                 response = client.post(url + '/api/ai', content=body,
-                                       headers={'Content-Type': 'application/json'})
+                                       headers=_headers(True))
         if response.status_code == 413:
             raise RelayError('Vercel의 요청·응답 크기 한도(4.5MB)를 초과했습니다. 필요한 영역을 나누어 캡처해 주세요.')
+        if response.status_code == 401:
+            raise RelayError('AI 서버 접근 토큰이 없거나 올바르지 않습니다. ai-server.json의 token을 확인해 주세요.')
         if response.status_code == 503:
             raise RelayError('AI 서버가 아직 설정되지 않았거나 사용할 수 없습니다.')
         if response.status_code == 429:
@@ -78,7 +99,10 @@ def _large_image_request(client, url, payload):
     receipt = None
     try:
         issued = client.post(url + '/api/upload', json={'action': 'create', 'bytes': len(data),
-                            'sha256': hashlib.sha256(data).hexdigest()})
+                            'sha256': hashlib.sha256(data).hexdigest()},
+                            headers=_headers())
+        if issued.status_code == 401:
+            raise RelayError('AI 서버 접근 토큰이 없거나 올바르지 않습니다. ai-server.json의 token을 확인해 주세요.')
         if issued.status_code != 200:
             raise RelayError('큰 이미지 업로드를 준비하지 못했습니다. 서버 저장소 연결을 확인해 주세요.')
         grant = issued.json()
@@ -93,11 +117,12 @@ def _large_image_request(client, url, payload):
         if uploaded.status_code not in (200, 201):
             raise RelayError('이미지를 업로드하지 못했습니다. 연결 상태를 확인하고 다시 시도해 주세요.')
         return client.post(url + '/api/ai', json={'operation': 'ocr_blob', 'receipt': receipt,
-                           'detail': payload.get('detail', 'high')})
+                           'detail': payload.get('detail', 'high')}, headers=_headers())
     finally:
         if receipt:
             try:
                 # Server also deletes before replying; repeat deletion is safe.
-                client.post(url + '/api/upload', json={'action': 'delete', 'receipt': receipt}, timeout=15)
+                client.post(url + '/api/upload', json={'action': 'delete', 'receipt': receipt},
+                            headers=_headers(), timeout=15)
             except Exception:
                 pass  # Daily server cleanup covers disconnects and abandoned uploads.

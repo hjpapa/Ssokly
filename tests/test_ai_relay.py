@@ -31,6 +31,17 @@ class RelayTests(unittest.TestCase):
             self.assertNotIn('synthetic-never-send', str(client.post.call_args))
             self.assertEqual(client.post.call_args.kwargs['headers'], {'Content-Type': 'application/json'})
 
+    def test_optional_app_token_is_sent_only_to_relay(self):
+        with patch.dict('os.environ', {'SSOKLY_API_TOKEN': 'synthetic-token'}),                 patch('services.ai_relay.httpx.Client') as factory:
+            client = factory.return_value.__enter__.return_value
+            client.post.return_value = Mock(status_code=200)
+            client.post.return_value.json.return_value = {'status': 'completed', 'text': '합성 결과'}
+            ai_relay.request_relay({'operation': 'text', 'text': '합성'})
+            self.assertEqual(client.post.call_args.kwargs['headers']['X-Ssokly-Token'], 'synthetic-token')
+            client.post.return_value = Mock(status_code=401)
+            with self.assertRaises(ai_relay.RelayError):
+                ai_relay.request_relay({'operation': 'text', 'text': '합성'})
+
     def test_ocr_does_not_load_key_or_call_sdk(self):
         with patch('services.ai_relay.request_relay', return_value='합성 OCR') as request, \
                 patch('services.ocr_service._load_openai_settings') as settings, patch('openai.OpenAI') as sdk:

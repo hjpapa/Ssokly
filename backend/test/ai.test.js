@@ -72,3 +72,26 @@ test('former size limits are removed; malformed requests still fail', async () =
   await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' }, bad);
   assert.equal(bad.statusCode, 400);
 });
+test('prototype keys and oversized text are rejected', () => {
+  for (const bad of [{ mode: 'constructor', audience: 'name' }, { mode: '요약', audience: 'constructor' },
+    { mode: '__proto__', audience: 'x' }]) {
+    assert.throws(() => buildRequest({ ...body, ...bad }));
+  }
+  assert.throws(() => buildRequest({ ...body, text: 'x'.repeat(200_001) }));
+  assert.doesNotThrow(() => buildRequest({ ...body, text: 'x'.repeat(200_000) }));
+});
+test('app token is enforced only when configured', async () => {
+  process.env.OPENAI_API_KEY = 'synthetic-openai-key';
+  process.env.SSOKLY_APP_TOKEN = 'synthetic-app-token';
+  try {
+    let res = response();
+    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body }, res);
+    assert.equal(res.statusCode, 401);
+    res = response();
+    await handler({ method: 'POST', headers: { 'content-type': 'application/json', 'x-ssokly-token': 'wrong' }, body }, res);
+    assert.equal(res.statusCode, 401);
+  } finally {
+    delete process.env.SSOKLY_APP_TOKEN;
+    delete process.env.OPENAI_API_KEY;
+  }
+});

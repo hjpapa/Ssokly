@@ -10,6 +10,7 @@ Node.js 24와 Vercel CLI 사용. 이 `backend` 폴더를 프로젝트 루트로 
 2. `npx vercel link`로 전용 프로젝트 연결
 3. Vercel 프로젝트 환경변수 Production에 `OPENAI_API_KEY`를 Secret으로 등록
 4. `npx vercel blob create-store ssokly-ocr-temp --access private --region icn1 --environment production --yes`로 전용 비공개 저장소 생성·연결
+4-1. (권장) Production의 `SSOKLY_APP_TOKEN`에 무작위 비밀값을 Secret으로 등록하면 `/api/ai`·`/api/upload`가 `X-Ssokly-Token` 헤더 일치를 요구한다. 미설정이면 기존처럼 공개 동작한다. 같은 값을 앱의 `ai-server.json`에 `"token"`으로 넣거나 환경변수 `SSOKLY_API_TOKEN`으로 지정한다. 제출·공유용 `ai-server.json`에는 토큰을 넣지 않는다. 앱에 든 토큰은 배포본에서 추출될 수 있으므로 OpenAI 프로젝트 지출 한도와 함께 사용한다.
 5. Production의 `CRON_SECRET`에 충분히 긴 무작위 비밀값을 Secret으로 등록(업로드 확인 서명·정리 작업 인증). 생성값을 코드/로그/제출 파일에 넣지 않음
 6. `npx vercel deploy --prod`
 7. 앱 루트(패키징된 앱은 EXE 옆)의 `ai-server.json`에 `{"url":"https://실제-서버-주소"}` 설정
@@ -25,6 +26,7 @@ Node.js 24와 Vercel CLI 사용. 이 `backend` 폴더를 프로젝트 루트로 
 - 응답이 미완성·거절·빈 결과면 오류로 처리. 자동 재시도나 로컬 키로의 전환 없음. 서버 모드는 완성 결과를 한 번에 표시하므로 생성 중 부분 미리보기는 없다.
 - 서울 `icn1`, 함수 최대 300초, OpenAI 대기 최대 285초. 앱 대기는 300초. 앱 취소는 결과 적용을 막으며 이미 실행 중인 서버 요청의 비용 취소를 보장하지 않는다.
 - 서버는 문서 본문과 키를 로그에 기록하지 않는다. 플랫폼의 기본 요청 메타데이터 로그는 별도이다.
+- 텍스트 요청은 200,000자, 큰 이미지 업로드 발급은 30MB까지만 허용한다. 프롬프트 조회는 서버 고정 목록의 자체 키만 인정한다.
 - 로그인·시험 활성화 조건·이용 횟수·서비스 만료 기한을 두지 않는다. 큰 이미지에는 연결된 비공개 저장소와 CRON_SECRET이 필요하며 SSOKLY_RELAY_ENABLED는 사용하지 않는다. 주소를 아는 사람은 호출할 수 있고 모델·저장소 이용료는 운영자에게 청구된다. 파일 업로드 권한의 짧은 만료는 서비스 이용 기간 제한이 아니다.
 - 이전 저장 기록의 문서 파일 전체 API 전송은 서버 모드에서 지원하지 않는다. 파일 열기로 다시 가져온 뒤 필요한 페이지를 OCR한다.
 

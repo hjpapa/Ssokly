@@ -128,3 +128,24 @@ test('scheduled cleanup requires server secret', async () => {
   await handler({ method: 'GET', headers: { authorization: 'Bearer synthetic-cleanup-secret' } }, res);
   assert.equal(res.data.removed, 2);
 });
+test('upload requires the app token when configured and caps the image size', async () => {
+  const storage = { issue: async () => ({ upload_url: 'https://vercel.com/api/blob/?x', receipt: 'r' }) };
+  const create = bytes => request({ action: 'create', bytes, sha256: 'a'.repeat(64) });
+  let res = response();
+  await uploadHandler(storage)(create(30 * 1024 * 1024 + 1), res);
+  assert.equal(res.statusCode, 400);
+  res = response();
+  await uploadHandler(storage)(create(1024), res);
+  assert.equal(res.statusCode, 200);
+  process.env.SSOKLY_APP_TOKEN = 'synthetic-app-token';
+  try {
+    res = response();
+    await uploadHandler(storage)(create(1024), res);
+    assert.equal(res.statusCode, 401);
+    res = response();
+    const req = create(1024);
+    req.headers['x-ssokly-token'] = 'synthetic-app-token';
+    await uploadHandler(storage)(req, res);
+    assert.equal(res.statusCode, 200);
+  } finally { delete process.env.SSOKLY_APP_TOKEN; }
+});
