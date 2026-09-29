@@ -5,13 +5,25 @@ import handler, { buildRequest, completedText } from '../api/ai.js';
 const body = { operation: 'text', text: '합성 안내', mode: '요약', audience: '교직원' };
 const completed = { status: 'completed', output: [{ type: 'message', status: 'completed',
   content: [{ type: 'output_text', text: '합성 결과' }] }] };
+test('Luna OCR none and every text action low are fixed regardless of complexity', () => {
+  const image = 'data:image/png;base64,' + Buffer.from([137,80,78,71,13,10,26,10]).toString('base64');
+  const ocr = buildRequest({operation: 'ocr', image});
+  assert.equal(ocr.model, 'gpt-6-luna');
+  assert.deepEqual(ocr.reasoning, {effort: 'none'});
+  for (const mode of ['요약', '안내문', '일정·할 일 정리']) {
+    const request = buildRequest({...body, mode});
+    assert.equal(request.model, 'gpt-6-luna');
+    assert.deepEqual(request.reasoning, {effort: 'low'});
+    assert.throws(() => buildRequest({...body, mode, reasoning: {effort: 'none'}}));
+  }
+});
 function response() {
   return { headers: {}, setHeader(k, v) { this.headers[k] = v; }, end(data) { this.data = JSON.parse(data); } };
 }
 
 test('fixed model, no storage/tools, reject injected options and remote images', () => {
   const request = buildRequest(body);
-  assert.equal(request.model, 'gpt-5-nano');
+  assert.equal(request.model, 'gpt-6-luna');
   assert.equal(request.store, false);
   assert.equal(request.max_output_tokens, undefined);
   assert.throws(() => buildRequest({ ...body, model: 'other' }));

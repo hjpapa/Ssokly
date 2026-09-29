@@ -6,7 +6,7 @@ const prompts = JSON.parse(readFileSync(new URL('../prompts.json', import.meta.u
 
 export function buildRequest(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('invalid');
-  const common = { model: 'gpt-5-nano', store: false,
+  const common = { model: 'gpt-6-luna', store: false,
     text: { verbosity: 'low' } };
   if (body.operation === 'ocr') {
     if (Object.keys(body).some(k => !['operation', 'image', 'detail'].includes(k))) throw Error('invalid');
@@ -16,7 +16,7 @@ export function buildRequest(body) {
       .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw Error('invalid');
     const detail = body.detail ?? 'high';
     if (!['low', 'auto', 'high'].includes(detail)) throw Error('invalid');
-    return { ...common, instructions: prompts.ocr, reasoning: { effort: 'minimal' },
+    return { ...common, instructions: prompts.ocr, reasoning: { effort: 'none' },
       input: [{ role: 'user', content: [
         { type: 'input_text', text: '이 이미지를 고정밀 OCR로 전사해 주세요.' },
         { type: 'input_image', image_url: body.image, detail }

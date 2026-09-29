@@ -4,6 +4,44 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## Luna 고정 정책 운영 반영 — 2026-09-29 / 10
+
+OCR `gpt-6-luna`/`none`, 모든 요약·안내문·일정·할 일 `low` 고정. 실제 직접/중계 요청 옵션을 오프라인에서 확인.
+
+| 명령/검사 | 결과 |
+| --- | --- |
+| `python -m unittest tests.test_luna_defaults tests.test_text_actions tests.test_ai_relay tests.test_model_comparison -q` | **33개 통과**, 1.740초 |
+| `python tools/verify_capture_desk.py --all` | **536개 통과**, 150.630초, 실패·오류·건너뜀·통신 시도 0 |
+| backend `node --test test/*.test.js` | **16개 통과** |
+| `python tools/verify_v2_release.py` | **155개 통과**, 3.128초, 통신 시도 0 |
+| `python tools/verify_reopen_flow.py` | passed true, 캡처 3개·프로세스 2개 |
+| `python tools/export_relay_prompts.py` 및 생성물 diff | 변경 없음, 앱/서버 지시문 일치 |
+| 운영 합성 OCR→요약 06 | 2회 HTTP 200 완료, 전체 시간 4.195초/2.802초, 서버 상류 3.113초/2.205초 |
+| 운영 합성 안내문·일정 02 | 각각 1회 완료, 앱 호출 전체 3.700초/4.010초 |
+
+Python은 프로젝트 가상환경으로 실행. 이번 유료 생성 **4회**, 기존 /09의 60회와 별도. 배포 `dpl_6w7fio52FUzxuznzCpxBLdmEQosD` READY, 운영 별칭 `https://ssokly-ai-relay.vercel.app`. 로컬 키 로드를 차단한 중계 검증이며 합성 결과는 ignored `.local-results/luna-production-20260929`에 보관.
+
+06 요약에서 붙임 미제공·비용/담당자 미기재 모두 보존. 02 안내문 조건·미회신 허용 보존. **일정에서는 학생이 담임에게 신청하는 원문을 학교의 신청 취합·전달 업무로 바꾼 표현이 있음**. 호출 성공과 사실 정확도를 구분하며 무검수 사용을 보장하지 않는다. 기존 `|` 표 감지 문제 미해결. 이번 UI/배율·실물·부하·패키징 검증 없음. 운영 응답에 토큰이 없어 이번 사용량·비용 미측정.
+
+## nano·Luna none·Luna low 비교 — 2026-09-29 / 09
+
+사용자 승인된 기존 로컬 키로 **직접 OpenAI API** 호출. 운영 Vercel/모델 변경 없음. 이번 생성 요청 **60회**, 모두 HTTP 200·완료. 접근 GET 조회 4회 별도. 이전 /08 유료 40회와 이번 60회를 혼동하지 않는다. 세 설정별 10개 공문의 OCR→요약 총시간·API usage·문자 비교와 요약 직접 대조를 [MODEL_COMPARISON.md](MODEL_COMPARISON.md)에 기록했다.
+
+| 명령/검사 | 결과 |
+| --- | --- |
+| `.venv/Scripts/python.exe tools/compare_ai_models.py --preflight-only` | nano·gpt-6-luna 모두 접근 조회 200, 생성 0회 |
+| `.venv/Scripts/python.exe -X utf8 tools/compare_ai_models.py --live` | 60회 성공, 자동 재시도 0. 동일 자료/지시문, nano OCR minimal·요약 low / Luna none·none / Luna low·low |
+| `.venv/Scripts/python.exe -m unittest tests.test_model_comparison -q` | 최종 **5개 통과**. 초기 4개 후 미완료 집계 거부 1개 추가 |
+| `python tools/compare_ai_models.py` | 계획만 출력, API 0회 |
+| `python tools/compare_ai_models.py --summarize .local-results/model-comparison/report.json` | 오프라인 집계 완료, 키 로드·API 0회 |
+| 기존·신규 OCR 대조 및 `source_table_blocks` | 기존 03/04 오류 외 06의 기재→게재 확인. 신규 세 모델 04의 표 블록 수 모두 0 (`|` 구분자 미지원) |
+
+문서당 전체 중앙값 nano **4.594초**, none **3.227초**, low **3.669초**. 토큰 합계 각각 **34,511 / 27,568 / 28,454**. 추론 토큰은 출력에 포함되며 중복 합산하지 않음. OCR 문자 완전 일치 **7/10 / 10/10 / 9/10**, 공백/줄바꿈/`|` 제외 1,468자 기준. 요약은 별도 의미 검토: nano 표/붙임 오류, none 미기재 정보 생략, low의 의미 조건 보존 관찰. 모델별 1회씩인 알려진 가상 표본이고 비용·실물·부하·Vercel 전체 시간·독립 검증 자료는 미측정.
+
+최초 비교 도구 import 함수명 오류는 네트워크 호출 전에 수정했다. 앱/서버 실행 코드·프롬프트·UI 변경이 없어 이번에는 전체 회귀·Tk·backend 테스트를 재실행하지 않았다. /08 테스트 수를 이번 실행으로 표시하지 않는다.
+
+최종 오프라인 5개 재실행·변경 Python compileall·문서 로컬 링크·`git diff --check` 통과. 보고서 60건의 HTTP 200, 입력+출력=총 토큰 일치를 재계산해 확인했고 전체 사용량은 **90,533토큰**, 캐시 입력 0이었다.
+
 ## 운영 Vercel·가상 공문 10개·UI 평가 — 2026-09-29 / 08
 
 사용자 승인 후 운영 배포 및 유료 합성 검증. 상세 사례·완성도·미검증 범위는 [APP_EVALUATION.md](APP_EVALUATION.md). 실제 사용자 문서·DB·키를 평가 자료로 사용하지 않음.

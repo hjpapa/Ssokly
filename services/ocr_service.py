@@ -9,7 +9,7 @@ from PIL import Image, ImageOps
 from services.diagnostics import log_failure
 
 
-DEFAULT_MODEL = "gpt-5-nano"
+DEFAULT_MODEL = "gpt-6-luna"
 OPENAI_REQUEST_TIMEOUT_SECONDS = 120.0
 OPENAI_MAX_RETRIES = 1
 PNG_UPLOAD_COMPRESS_LEVEL = 3
@@ -26,7 +26,7 @@ MISSING_KEY_MESSAGE = (
     "OpenAI API 키가 설정되어 있지 않아 이미지 OCR을 실행할 수 없습니다.\n\n"
     "프로젝트 폴더의 .env 파일에 다음 값을 설정해 주세요.\n"
     "OPENAI_API_KEY=your_api_key_here\n"
-    "OPENAI_OCR_MODEL=gpt-5-nano"
+    "OPENAI_OCR_MODEL=gpt-6-luna"
 )
 
 OCR_PROMPT = """
@@ -214,11 +214,11 @@ def extract_text_from_image(
             max_retries=OPENAI_MAX_RETRIES,
         )
         options = {}
-        if model.startswith("gpt-5.6"):
+        if model.startswith(("gpt-6", "gpt-5.6")):
             options["reasoning"] = {"effort": "none"}
-        elif model.startswith("gpt-5"):
+        elif model.startswith(("gpt-5", "gpt-6")):
             options["reasoning"] = {"effort": "minimal"}
-        if model.startswith("gpt-5"):
+        if model.startswith(("gpt-5", "gpt-6")):
             options["text"] = {"verbosity": "low"}
         response = client.responses.create(
             model=model,
@@ -303,6 +303,8 @@ def extract_text_from_file(
         response = client.responses.create(
             model=model,
             store=False,
+            reasoning={"effort": "none"},
+            text={"verbosity": "low"},
             instructions=DOCUMENT_PROMPT,
             input=[
                 {

@@ -360,7 +360,7 @@ class JobsMixin:
                 if not success:
                     if metadata['kind'] == 'ocr':
                         before = next(p for p in self.library.pages(metadata['document_id']) if p['id'] == metadata['page_id'])
-                        self.library.capture_store.set_ocr_failure(metadata['capture_id'], value, profile='gpt-5-nano')
+                        self.library.capture_store.set_ocr_failure(metadata['capture_id'], value, profile='gpt-6-luna')
                         self._refresh_current_page(metadata['document_id'], metadata['page_id'], previous_token=before['updated_at'])
                     self.status.set(value + ' 원본과 마지막 성공 결과는 유지했습니다.')
                     continue
@@ -371,7 +371,7 @@ class JobsMixin:
                     before = next(p for p in self.library.pages(metadata['document_id']) if p['id'] == metadata['page_id'])
                     self.library.remember_initial_ocr(metadata['page_id'], before.get('ocr_text') or value)
                     self._transfer().record_ocr(metadata['capture_id'], metadata['snapshot'], value)
-                    self.library.capture_store.update_ocr(metadata['capture_id'], value, profile='gpt-5-nano')
+                    self.library.capture_store.update_ocr(metadata['capture_id'], value, profile='gpt-6-luna')
                     self._refresh_current_page(metadata['document_id'], metadata['page_id'], previous_token=before['updated_at'])
                     self.status.set('텍스트 인식 완료 · 직접 수정한 텍스트는 유지합니다.')
                 elif metadata['kind'] == 'file':
