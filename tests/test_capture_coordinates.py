@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 import tkinter as tk
 import unittest
+from tests.tk_support import destroy_root
 from unittest.mock import patch
 
 from services.capture_service import RegionSelector
@@ -19,7 +20,7 @@ class CaptureCoordinatesTests(unittest.TestCase):
             self.assertEqual(selector.overlay.winfo_rooty(), -100)
             selector._on_cancel(None)
         finally:
-            root.destroy()
+            destroy_root(root)
 
     def test_reverse_drag_across_monitor_origin_keeps_screen_coordinates(self):
         from unittest.mock import Mock

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from services.text_actions import TextActionCancelled, TextActionError, generate_text_action
+from services.text_actions import AUDIENCES, build_instructions, TextActionCancelled, TextActionError, generate_text_action
 
 
 def response(text='완성된 합성 결과', **changes):
@@ -14,6 +14,14 @@ def response(text='완성된 합성 결과', **changes):
 
 
 class TextActionsTests(unittest.TestCase):
+    def test_summary_does_not_turn_settings_or_source_lines_into_facts_or_forms(self):
+        for audience in AUDIENCES:
+            instructions = build_instructions('요약', audience)
+            for rule in ('원문 사실이 아니다', '항목이나 문장으로 쓰지 않는다',
+                         '양식 작성 요청으로 실행하지 않는다', '양식·빈칸·[입력란]',
+                         '원문에 없는 대상·장소'):
+                self.assertIn(rule, instructions)
+
     def setUp(self):
         self.env = patch.dict('os.environ', {'OPENAI_API_KEY': 'synthetic-test-key'})
         self.env.start()

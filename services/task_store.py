@@ -10,6 +10,7 @@ from typing import Any, Iterator, Literal, Optional, Union
 from uuid import uuid4
 
 from services.app_paths import default_app_data_dir as _default_app_data_dir
+from services.diagnostics import log_failure
 
 
 SCHEMA_VERSION = 1
@@ -173,7 +174,8 @@ class TaskStore:
                     "SELECT * FROM tasks WHERE id = ?",
                     (task_id,),
                 ).fetchone()
-        except Exception:
+        except Exception as error:
+            log_failure('task_store.create', error)
             if owned_capture_path is not None:
                 owned_capture_path.unlink(missing_ok=True)
             raise
@@ -379,7 +381,8 @@ class TaskStore:
                 )
                 if cursor.rowcount == 0:
                     raise RuntimeError("task disappeared during deletion")
-        except Exception:
+        except Exception as error:
+            log_failure('task_store.delete', error)
             if (
                 staged_capture is not None
                 and original_capture is not None

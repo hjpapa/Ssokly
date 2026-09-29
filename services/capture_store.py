@@ -26,6 +26,7 @@ from services.capture_records import (
     _safe_filename_component, _text_sha256, _utc_now, _validated_datetime_text, _verified_image_size,
 )
 from services.capture_schema import METADATA_SCHEMA_VERSION, CaptureSchemaMixin  # noqa: F401 - re-exported
+from services.diagnostics import log_failure
 
 
 MAX_STORED_CAPTURES = 8
@@ -166,7 +167,8 @@ class CaptureStore(CaptureSchemaMixin):
             with self._connection() as connection:
                 known = {row[0] for row in connection.execute('SELECT storage_name FROM capture_items')}
             candidates = list(self.directory.iterdir())
-        except (OSError, sqlite3.Error):
+        except (OSError, sqlite3.Error) as error:
+            log_failure('capture_store.recover_orphans', error)
             return 0
         recovered = 0
         for candidate in candidates:
@@ -217,7 +219,8 @@ class CaptureStore(CaptureSchemaMixin):
                          _datetime_to_text(created_at), _datetime_to_text(_utc_now())))
                     inserted = cursor.rowcount
                 recovered += inserted
-            except (OSError, sqlite3.Error, ValueError, RuntimeError, SyntaxError, EOFError, Image.DecompressionBombError):
+            except (OSError, sqlite3.Error, ValueError, RuntimeError, SyntaxError, EOFError, Image.DecompressionBombError) as error:
+                log_failure('capture_store.recover_orphans', error)
                 # Recovery must not hide healthy entries because one orphan is
                 # damaged/locked. No source path or content is logged here.
                 continue
@@ -678,7 +681,8 @@ class CaptureStore(CaptureSchemaMixin):
                     normalized_ids,
                 )
                 deleted_count = cursor.rowcount
-        except Exception:
+        except Exception as error:
+            log_failure('capture_store.purge', error)
             self._restore_staged_files(staged_files)
             raise
 
@@ -687,7 +691,8 @@ class CaptureStore(CaptureSchemaMixin):
         for _original, staged in staged_files:
             try:
                 staged.unlink(missing_ok=True)
-            except OSError:
+            except OSError as error:
+                log_failure('capture_store.purge', error)
                 pass
         return deleted_count
 
@@ -732,12 +737,14 @@ class CaptureStore(CaptureSchemaMixin):
                 legacy_directory.glob("*.png"),
                 key=lambda path: path.stat().st_mtime_ns,
             )
-        except OSError:
+        except OSError as error:
+            log_failure('capture_store._import_legacy_captures', error)
             return
         for legacy_path in legacy_paths:
             try:
                 self._import_legacy_capture(legacy_path)
-            except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            except (OSError, sqlite3.Error, ValueError, RuntimeError) as error:
+                log_failure('capture_store._import_legacy_captures', error)
                 # One damaged or locked old temporary file must not stop the app
                 # or prevent other captures from being recovered.
                 continue
@@ -804,7 +811,8 @@ class CaptureStore(CaptureSchemaMixin):
                     "VALUES (?, ?)",
                     (legacy_key, capture_id),
                 )
-        except Exception:
+        except Exception as error:
+            log_failure('capture_store._import_legacy_capture', error)
             if destination_created:
                 destination.unlink(missing_ok=True)
             raise
@@ -896,7 +904,8 @@ class CaptureStore(CaptureSchemaMixin):
             record = self._record_from_row(connection, row)
             if not record.path.is_file():
                 record = None
-        except (ValueError, OSError):
+        except (ValueError, OSError) as error:
+            log_failure('capture_store._safe_record_from_row', error)
             record = None
         text_fields = ('id', 'source', 'ocr_text', 'verified_text', 'created_at', 'updated_at')
         result = {name: row[name] if isinstance(row[name], str) else '' for name in text_fields}

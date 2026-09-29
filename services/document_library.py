@@ -186,6 +186,7 @@ class DocumentLibrary:
                 capture = entry['record']
             return {'id': item['id'], 'document_id': item['document_id'], 'capture_id': item['capture_id'],
                     'path': str(capture.path) if capture else None,
+                    'captured_at': _iso(capture.created_at) if capture else '',
                     'text': capture.effective_text if capture else item['text'],
                     'ocr_text': capture.ocr_text if capture else '',
                     'updated_at': _iso(capture.updated_at) if capture else item['updated_at'],
@@ -372,6 +373,7 @@ class DocumentLibrary:
         verified_text = verified_text if isinstance(verified_text, str) else ''
         return {'id': 'capture:' + entry['id'], 'document_id': document_id or 'capture:' + entry['id'],
                 'capture_id': entry['id'], 'path': None,
+                'captured_at': _safe_iso(entry.get('created_at')),
                 'text': verified_text if verified else ocr_text, 'ocr_text': ocr_text,
                 'verified_text': verified_text, 'updated_at': _safe_iso(entry.get('updated_at')),
                 'source_name': entry.get('source', ''), 'source_path': None,
@@ -424,6 +426,7 @@ class DocumentLibrary:
     def _legacy_capture_page(capture, document_id=None):
         return {'id': 'capture:' + capture.id, 'document_id': document_id or 'capture:' + capture.id,
                 'capture_id': capture.id, 'path': str(capture.path), 'text': capture.effective_text,
+                'captured_at': _iso(capture.created_at),
                 'ocr_text': capture.ocr_text, 'updated_at': _iso(capture.updated_at),
                 'source_name': capture.source, 'source_path': str(capture.path), 'legacy': True, 'readonly': True,
                 'ocr_status': capture.ocr_status, 'review_status': capture.review_status,
@@ -567,9 +570,10 @@ class DocumentLibrary:
         """Active captures with document metadata for the visual organizer."""
         result = []
         for doc in self.list_documents():
-            for page in self.pages(doc['id']):
+            for position, page in enumerate(self.pages(doc['id'])):
                 if page.get('capture_id'):
                     result.append(dict(page, document_title=doc['title'], labels=doc.get('labels', []),
+                                       position=page.get('position', position),
                                        memo=doc.get('memo', ''), document_version=doc['updated_at'],
                                        document_readonly=doc.get('readonly', False)))
         return result

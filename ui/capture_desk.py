@@ -14,6 +14,7 @@ from services.app_paths import default_app_data_dir
 from services.capture_location import CaptureLocation
 from services.capture_store import CaptureStore
 from services.document_library import DocumentLibrary, LibraryConflictError
+from services.diagnostics import configure_local_logging
 from services.source_review import highlight_source
 from ui.desk_widgets import InlineTableView, ResponsivePanedWindow, ThumbnailCache, ZoomImageView
 from ui.desk_theme import apply_theme
@@ -22,12 +23,14 @@ from ui.desk_jobs import JobsMixin
 from ui.desk_layout import LayoutMixin
 from ui.desk_library import LibraryMixin
 from ui.desk_text import fingerprint  # re-exported for callers of ui.capture_desk.fingerprint
+from services.diagnostics import log_failure
 
 
 class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
     """All widget and persistence changes run on Tk's thread, never a worker."""
     def __init__(self, *, library=None, app_data_dir=None):
         root = Path(app_data_dir) if app_data_dir is not None else default_app_data_dir()
+        configure_local_logging(library.app_data_dir if library is not None else root)
         self._capture_location = CaptureLocation(root) if library is None and app_data_dir is None else None
         if library is None:
             captures = CaptureStore(self._capture_location.resolve()) if self._capture_location else None
@@ -69,6 +72,7 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
 
     def _build_ui(self):
         header = ttk.Frame(self, padding=(12, 10))
+        self._header = header
         header.pack(fill='x')
         self._header_logo = ttk.Label(header, text=' Ssokly', image=self.brand_icon, compound='left', font=('Segoe UI', 16, 'bold'))
         self._header_logo.grid(row=0, column=0, sticky='w', padx=(0, 14))
@@ -77,12 +81,12 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         self._header_secondary = ttk.Frame(header)
         self._header_secondary.grid(row=0, column=2, sticky='e')
         header.columnconfigure(1, weight=1)
-        self.capture_button = ttk.Button(self._header_primary, text='새 캡처', command=self.capture_new, style='Primary.TButton')
+        self.capture_button = ttk.Button(self._header_primary, text='새 캡처', width=6, command=self.capture_new, style='Primary.TButton')
         self.capture_button.pack(side='left', padx=3)
-        self.add_button = ttk.Button(self._header_primary, text='+ 페이지', command=self.capture_page, style='Desk.TButton')
+        self.add_button = ttk.Button(self._header_primary, text='+ 페이지', width=7, command=self.capture_page, style='Desk.TButton')
         self.add_button.pack(side='left', padx=3)
-        ttk.Button(self._header_primary, text='파일 열기', command=self.open_file, style='Desk.TButton').pack(side='left', padx=3)
-        self.library_button = ttk.Button(self._header_secondary, text='보관함', command=self.toggle_library)
+        ttk.Button(self._header_primary, text='파일 열기', width=7, command=self.open_file, style='Desk.TButton').pack(side='left', padx=3)
+        self.library_button = ttk.Button(self._header_secondary, text='보관함', width=6, command=self.toggle_library)
         self.library_button.pack(side='right')
         menu = tk.Menu(self, tearoff=False)
         menu.add_command(label='새 텍스트 문서', command=self.new_text_document)
@@ -102,6 +106,7 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         more.pack(side='right', padx=6)
 
         options = ttk.Frame(self, padding=(12, 0, 12, 8))
+        self._capture_options = options
         options.pack(fill='x')
         consent = self.library.get_setting('automatic_ocr_consent', False) is True
         mode = self.library.get_setting('capture_mode', '보관만')
@@ -190,6 +195,7 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         self.recovery_label = ttk.Label(self.workspace, textvariable=self.recovery_warning,
             foreground='#b42318', wraplength=700)
         identity = ttk.Frame(self.workspace, padding=(10, 0, 0, 7))
+        self._identity = identity
         identity.pack(fill='x')
         self.title_var = tk.StringVar()
         self.title_entry = ttk.Entry(identity, textvariable=self.title_var)
@@ -324,7 +330,8 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
             pages = self.library.pages(document_id)
             outputs = self.library.outputs(document_id) if not document.get('readonly') else []
             active_id = self.library.get_setting('active_output:' + document_id)
-        except Exception:
+        except Exception as error:
+            log_failure('capture_desk.open_document', error)
             self.status.set('문서를 열지 못했습니다. 기존 입력은 유지합니다.')
             return False
         self.document, self.page_records = document, pages
@@ -402,7 +409,8 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
             index = next(i for i, page in enumerate(fresh) if page['id'] == selected_id)
             self.page_records = fresh
             self._load_page(index)
-        except Exception:
+        except Exception as error:
+            log_failure('capture_desk._page_selected', error)
             if self.page:
                 self.page_selector.current(next(i for i, p in enumerate(self.page_records) if p['id'] == self.page['id']))
             self.status.set('페이지를 읽지 못했습니다. 현재 입력은 유지합니다.')
@@ -418,7 +426,8 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
             if self.document:
                 try:
                     self.library.set_setting('active_output:' + self.document['id'], output['id'])
-                except Exception:
+                except Exception as error:
+                    log_failure('capture_desk._load_output', error)
                     self.status.set('결과 본문은 보존됐지만 마지막 열람 위치를 저장하지 못했습니다.')
             self._update_output_staleness()
         else:
@@ -501,7 +510,8 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
             if title_changed or details_changed:
                 self.refresh_library()
             return True
-        except Exception:
+        except Exception as error:
+            log_failure('capture_desk.flush_edits', error)
             self.save_state.set('저장 실패 · 입력 유지')
             self.status.set('입력은 유지됩니다. 충돌 시 복사 후 더보기 → 저장된 최신값 다시 열기를 사용하세요.')
             if show_error:
@@ -563,7 +573,8 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
             self.library.reorder_pages(self.document['id'], ids, expected_updated_at=self.document['updated_at'])
             self.open_document(self.document['id'])
             self._load_page(target)
-        except Exception:
+        except Exception as error:
+            log_failure('capture_desk.move_page', error)
             self.status.set('페이지 순서를 저장하지 못했습니다. 원래 순서는 유지합니다.')
 
     def show_capture_location(self):
@@ -639,3 +650,9 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         self.thumbnails.clear()
         self.destroy()
         return True
+
+    def destroy(self):
+        from ui.tk_lifecycle import prepare_destroy
+        self._closing = True
+        prepare_destroy(self)
+        super().destroy()

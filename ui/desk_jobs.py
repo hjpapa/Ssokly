@@ -13,6 +13,7 @@ from services.capture_service import capture_selected_region
 from services.document_service import LEGACY_DOCUMENT_EXTENSIONS, LOCAL_DOCUMENT_EXTENSIONS, SUPPORTED_FILE_EXTENSIONS, attachment_kind, mime_type_for, read_hwpx_file, read_text_file
 from services.file_import import import_local_document
 from ui.desk_text import fingerprint
+from services.diagnostics import log_failure
 
 
 class JobsMixin:
@@ -29,7 +30,8 @@ class JobsMixin:
                     return
                 self.library.set_setting('automatic_ocr_consent', True)
             self.library.set_setting('capture_mode', self.capture_mode.get())
-        except Exception:
+        except Exception as error:
+            log_failure('desk_jobs._capture_mode_changed', error)
             self.capture_mode.set('보관만')
             self.status.set('설정을 저장하지 못해 보관만 모드로 유지합니다.')
 
@@ -50,7 +52,8 @@ class JobsMixin:
         def select():
             try:
                 image = capture_selected_region(self)
-            except Exception:
+            except Exception as error:
+                log_failure('desk_jobs.select', error)
                 self.status.set('캡처하지 못했습니다. 다시 시도하세요.')
                 image = None
             finally:
@@ -76,7 +79,8 @@ class JobsMixin:
             if auto_read and self.capture_mode.get() != '보관만':
                 self._read_image(page, automatic=True)
             return page
-        except Exception:
+        except Exception as error:
+            log_failure('desk_jobs.accept_capture', error)
             self.refresh_library()
             self.status.set('원본 이미지는 보관했습니다. 문서 연결은 다시 시도하세요.' if record else
                             '캡처 보관을 완료하지 못했습니다. 저장 공간과 보관함을 확인하세요. 저장된 PNG는 조회·재시작 때 복구합니다.')
@@ -143,7 +147,8 @@ class JobsMixin:
             metadata = {'document_id': page['document_id'], 'page_id': page['id'], 'capture_id': capture.id,
                 'snapshot': snapshot, 'scopes': self._scope_tokens(page['document_id'], [capture.id], document_ids)}
             self._start_job('ocr', lambda cancel: extract_text_from_image(snapshot.as_image(), detail='high', raise_errors=True), metadata)
-        except Exception:
+        except Exception as error:
+            log_failure('desk_jobs._read_image', error)
             self.status.set('읽기를 시작하지 못했습니다. 전송 범위와 원본을 확인하세요. 원본으로 대체 전송하지 않았습니다.')
 
     def open_file(self):
@@ -200,7 +205,8 @@ class JobsMixin:
         except ValueError as error:
             self.status.set(str(error))
             messagebox.showerror('문서 열기 실패', str(error), parent=self)
-        except Exception:
+        except Exception as error:
+            log_failure('desk_jobs.import_file', error)
             self.status.set('파일을 읽지 못했습니다. 원본 형식과 표 구조를 확인하세요. 기존 자료는 유지합니다.')
 
     def open_source_file(self):
@@ -262,7 +268,8 @@ class JobsMixin:
                 return extract_text_from_file(path, mime_type_for(path), raise_errors=True,
                     file_bytes=snapshot.file_bytes, filename=snapshot.file_name)
             self._start_job('file', read, metadata)
-        except Exception:
+        except Exception as error:
+            log_failure('desk_jobs._read_file', error)
             self.status.set('파일 읽기를 시작하지 못했습니다. 원본과 전송 범위를 확인하세요.')
 
     def generate(self):
@@ -298,7 +305,8 @@ class JobsMixin:
                 'snapshot': snapshot, 'scopes': self._scope_tokens(self.document['id'], capture_ids)}
             self._start_job('ai', lambda cancel: generate_text_action(snapshot.text, mode, audience, cancel_event=cancel), metadata)
             self.editor_tabs.select(self.ai_panel)
-        except Exception:
+        except Exception as error:
+            log_failure('desk_jobs.generate', error)
             self.status.set('AI 정리를 시작하지 못했습니다. 전송 범위를 다시 확인하세요.')
 
     def _start_job(self, kind, operation, metadata):
@@ -318,12 +326,14 @@ class JobsMixin:
                     raise ValueError('전송 범위 변경')
                 value = operation(cancel)
                 self._results.put((identifier, True, value))
-            except Exception:
+            except Exception as error:
+                log_failure('desk_jobs.work', error)
                 # SDK exception strings may contain request details; never persist them.
                 self._results.put((identifier, False, '요청이 완료되지 않았습니다. 연결과 입력을 확인한 뒤 다시 시도하세요.'))
         try:
             threading.Thread(target=work, daemon=True).start()
-        except Exception:
+        except Exception as error:
+            log_failure('desk_jobs._start_job', error)
             self._jobs.pop(identifier, None)
             raise
         self.status.set('텍스트를 읽고 있습니다… 원본은 보관됨' if kind != 'ai' else 'AI 정리 중… 기존 결과는 유지됩니다.')
@@ -382,7 +392,8 @@ class JobsMixin:
                     else:
                         self.status.set('AI 정리는 이전 결과 목록에 보관했습니다. 작업 중인 입력은 유지합니다.')
                 self.refresh_library()
-            except Exception:
+            except Exception as error:
+                log_failure('desk_jobs._poll_results', error)
                 self.status.set('응답을 저장하지 못했습니다. 현재 입력과 원본을 유지합니다. 저장 상태를 확인하세요.')
         if not self._closing:
             self.job_progress.refresh(self._jobs)

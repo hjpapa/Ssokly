@@ -1,6 +1,7 @@
 """Synthetic table review tests; no app data, credentials or network."""
 import tkinter as tk
 import unittest
+from tests.tk_support import destroy_root
 from unittest.mock import Mock, patch
 
 from services.source_review import source_table_blocks, tabular_blocks
@@ -25,7 +26,7 @@ class SourceTablesWindowTests(unittest.TestCase):
     def setUp(self):
         self.root = tk.Tk()
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
+        self.addCleanup(destroy_root, self.root)
         self.source = ('설명\n항목\t신청\t행사\t비고\n'
                        '합성 행사\t10월 2일\t2월 30일\t\n'
                        '다른 표\n구분\t일자\n↳ 이어진 값\t10월 8일')

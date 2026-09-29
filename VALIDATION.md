@@ -4,6 +4,43 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## 요약·목록·최소 창·오류 로그·Tk 종료 — 2026-09-29 / 07
+
+합성 문자열·이미지·임시 DB·mock 요청 사용. 실제 유료 API **0회**. 운영 서버 배포·제출 ZIP 생성 없음. OpenAI 중계/직접 호출 경로 및 서버의 제한 없음 정책 유지.
+
+| 단계 | 명령 (`python -m unittest`, 별도 표시 제외) | 결과 |
+| --- | --- | --- |
+| 1 요약 지시문 | `tests.test_text_actions tests.test_ai_relay -q` | 27개 통과. `tools/export_relay_prompts.py` 재생성 후 앱/서버 bundle 일치, 요약 양식·설정 출력 금지 검사 |
+| 2 전송 문구 | `tests.test_desk_mask_restore tests.test_desk_transfer -q` | 30개 통과. 이미지/파일 읽기, 텍스트 정리, 가림/범위 확대 흐름 |
+| 3 기본 이름 | `tests.test_capture_manager -q` | 초기 12개, 기존 읽기 전용 쪽 번호 회귀 추가 후 최종 13개 통과. 파일 경로·DB 원래 이름 보존 및 검색 확인 |
+| 4 최소 창·5 오류 로그 | `tests.test_diagnostics tests.test_storage_faults tests.test_capture_recovery tests.test_ai_relay tests.test_capture_desk_flow tests.test_capture_desk_layout -q` | 74개 통과, 42.729초. 로그 파일의 종류 기록·본문/예외 메시지 제외·로그 쓰기 실패 격리·저장/복구/전송 실패 유지 |
+| 6 종료 정리 | `tests.test_v2_transfer_integration tests.test_desk_widgets tests.test_desk_mask_restore tests.test_capture_desk_flow tests.test_capture_desk_layout -q` | 55개 통과, 46.277초. 이전 집중 검사에서 반복되던 ThemeChanged 출력 없음 |
+| 6 독립 종료 회귀·목록 | `tests.test_capture_manager tests.test_tk_lifecycle -q` | 14개 통과, 16.797초. 일반 Tk와 CaptureDeskApp을 새 프로세스에서 반복 생성/파괴, after 미실행 및 stderr 빈값 검사 |
+| 7 삭제 없는 판단 | `tests.test_analysis_pipeline tests.test_context_review tests.test_card_outputs tests.test_v2_semantics tests.test_source_schedule_fallback tests.test_legacy_reader -q` | 45개 통과. 후보·실사용 부분은 `LEGACY_CARD_AUDIT.md` 참조 |
+
+전체 게이트:
+
+- `.venv/Scripts/python.exe tools/verify_capture_desk.py --all`: **최종 528개 통과**, 177.788초. 실패/오류/건너뜀/통신 시도 0. 이전 519개에 회귀 9개 추가. 직전 전체도 528개(176.044초) 통과했으며, 캡처 시각 두 줄 표시 최종 수정 후 집중 13개(16.779초)와 전체를 다시 실행했다. 최종 실행에서 Tk ThemeChanged 출력 없음.
+- `.venv/Scripts/python.exe tools/verify_v2_release.py`: **155개 통과**, 3.349초. 실패/오류/건너뜀/통신 시도 0.
+- `.venv/Scripts/python.exe tools/verify_reopen_flow.py`: **passed true**, 합성 캡처 3장·독립 프로세스 2개. 종료 직전 수정 저장·라벨·메모·네 가지 검색·원본 재열기 통과.
+- backend `node --test test/*.test.js`: **15개 통과**, 524.817ms. 유료 요청 없음. 인증·입력 크기 제한을 새로 추가하지 않았으며 프로토타입 키 형식 거부 유지.
+- `.venv/Scripts/python.exe -m pip check`: 의존성 오류 없음.
+- Python 3.9 AST 99개 파일, 문서 로컬 링크 및 `git diff --check` 통과. Git의 LF/CRLF 안내는 공백 오류와 구분한다.
+
+실제 화면과 높이:
+
+- `python tools/preview_capture_desk.py --geometry 720x680` 및 가상환경의 `--busy --root .local-results/review-20260929`: 사용자 기본 저장소와 분리한 합성 창을 Computer Use로 관찰. 원본/편집 영역 동시 표시, 메뉴/캡처 관리 열기, 합성 대기 경과·취소 후 전송 종료 대기 표시 확인. 유료 요청은 보내지 않음.
+- `tests/test_capture_desk_layout.py`에서 Tk scaling 2.0(144dpi, Windows 약 150%)을 명시한 720×680 창의 캔버스 **일반 193px / 처리 중 150px**, 편집 영역 **103px / 108px** 측정. 새 회귀의 기준은 각각 최소 150px/100px이다. 메타데이터 펼침·복구 경고·긴 상태 안내 등 모든 UI 상태의 동일 최소값을 보장하는 측정은 아니다.
+
+중간 실패와 보완:
+
+- 기본 제한 환경의 첫 전송 UI 시험은 Tcl `init.tcl` 접근 오류 7개. 같은 30개 시험을 런타임 접근이 허용된 환경에서 재실행해 통과.
+- 새 150% 최소 높이 시험이 처음 일반 146px/처리 중 63px, 버튼 폭 보완 후 처리 중 98px로 실패. 머리글·대기 표시 축약 및 분할선 재계산 보완 후 통과. 바뀐 지연 안내의 이전 문구 기대 1건도 새 문구 계약으로 수정.
+- 기본 시스템 Python 전체 검사는 설치된 `python-docx`가 없어 `test_file_import`의 setUpClass 1건 실패(실행 518개, 120.976초). 기존 `.venv`에는 requirements의 문서 의존성이 설치돼 있어 그 환경으로 전체 재검증. 새 패키지 설치는 하지 않음.
+- ThemeChanged는 일반 Python after 목록에 없는 Tcl 테마 idle 이벤트가 파괴된 Tk에서 뒤늦게 실행된 문제. 이벤트를 숨기지 않고 root 파괴 전에 처리하며 Python 타이머는 전후 취소한다.
+
+한계: 수정 프롬프트의 실제 모델 출력은 재검증하지 않았고 운영 서버에도 수동 배포하지 않았다. 실물 공문·모든 배율/다중 모니터·실제 드래그 캡처·OS 클립보드·EXE/Setup은 별도 검증 대상이다. 로컬/합성 검사 통과를 모든 환경의 무결함이나 요약 의미 정확도 보증으로 해석하지 않는다.
+
 ## 파일 분할 후 회귀·실제 앱 동작 — 2026-09-29 / 06
 
 - `python tools/verify_capture_desk.py --all`: **519개 통과**, 94.748초. 실패/오류/건너뜀/통신 시도 0. `python tools/verify_v2_release.py`: **155개 통과**. `python tools/verify_reopen_flow.py`: 캡처 3장·프로세스 2개 통과.

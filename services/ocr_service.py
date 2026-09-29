@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from dotenv import load_dotenv
 from PIL import Image, ImageOps
+from services.diagnostics import log_failure
 
 
 DEFAULT_MODEL = "gpt-5-nano"
@@ -242,6 +243,7 @@ def extract_text_from_image(
             ],
         )
     except Exception as exc:
+        log_failure('ocr_service.extract_text_from_image', exc)
         message = (
             "OpenAI 이미지 OCR 중 오류가 발생했습니다.\n\n"
             "API 키, 네트워크 연결, 모델명, OpenAI API 사용 가능 상태를 확인해 주세요.\n"
@@ -320,6 +322,7 @@ def extract_text_from_file(
             ],
         )
     except Exception as exc:
+        log_failure('ocr_service.extract_text_from_file', exc)
         message = (
             "OpenAI 첨부 문서 읽기 중 오류가 발생했습니다.\n\n"
             "API 키, 네트워크 연결, 모델명, 파일 형식, OpenAI API 사용 가능 상태를 확인해 주세요.\n"

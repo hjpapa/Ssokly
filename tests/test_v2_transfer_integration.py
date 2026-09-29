@@ -1,7 +1,6 @@
 """P03-P05 synthetic boundary checks, with no keys/files/network from users."""
 import base64
 from io import BytesIO
-import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -15,19 +14,9 @@ from services.transfer_policy import make_file_snapshot
 
 
 SECRET = "SYNTHETIC_PRIVATE_TOKEN_63891"
-ORIGINAL = "학교는 참가 신청서를 제출한다.\n기한: 2026-10-15\n제출처: 교육지원청\n학생 이름: " + SECRET
-SAFE = ORIGINAL.replace(SECRET, "[가림1]")
 
 
 class V2TransferBoundaryTests(unittest.TestCase):
-    def assert_no_secret_or_attachment(self, kwargs):
-        serialized = json.dumps(kwargs, ensure_ascii=False)
-        self.assertNotIn(SECRET, serialized)
-        self.assertNotIn("input_file", serialized)
-        self.assertNotIn("file_data", serialized)
-        self.assertNotIn("input_image", serialized)
-        self.assertIn("[가림1]", serialized)
-
     def test_p04_file_bytes_override_does_not_reopen_mutated_original(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "synthetic.pdf"

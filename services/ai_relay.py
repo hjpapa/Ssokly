@@ -8,6 +8,7 @@ import sys
 from urllib.parse import urlsplit
 
 import httpx
+from services.diagnostics import log_failure
 
 CONFIG_PATH = (Path(sys.executable).parent if getattr(sys, 'frozen', False)
                else Path(__file__).resolve().parents[1]) / 'ai-server.json'
@@ -66,7 +67,8 @@ def request_relay(payload):
         return result['text'].strip()
     except RelayError:
         raise
-    except Exception:
+    except Exception as error:
+        log_failure('ai_relay.request_relay', error)
         raise RelayError('AI 서버에 연결하지 못했습니다. 네트워크와 서버 주소를 확인해 주세요.') from None
 
 
@@ -99,5 +101,6 @@ def _large_image_request(client, url, payload):
             try:
                 # Server also deletes before replying; repeat deletion is safe.
                 client.post(url + '/api/upload', json={'action': 'delete', 'receipt': receipt}, timeout=15)
-            except Exception:
+            except Exception as error:
+                log_failure('ai_relay._large_image_request', error)
                 pass  # Daily server cleanup covers disconnects and abandoned uploads.

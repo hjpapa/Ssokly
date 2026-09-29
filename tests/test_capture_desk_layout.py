@@ -3,6 +3,7 @@ from pathlib import Path
 from contextlib import closing
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -13,6 +14,22 @@ from ui.capture_desk import CaptureDeskApp
 
 
 class CaptureDeskLayoutTests(unittest.TestCase):
+    def test_minimum_window_at_150_percent_keeps_original_readable(self):
+        app = self.create_app(2.0)  # 144 dpi / 72 points: Windows 150%.
+        app.geometry('720x680')
+        with Image.new('RGB', (800, 1100), 'white') as image:
+            app.accept_capture(image, auto_read=False)
+        for busy in (False, True):
+            if busy:
+                app._jobs['synthetic'] = {'kind': 'ocr', 'started': time.monotonic() - 35, 'cancel': threading.Event()}
+                app.job_progress.refresh(app._jobs)
+            app.update()
+            with self.subTest(busy=busy):
+                self.assertGreaterEqual(app.image_view.canvas.winfo_height(), 150)
+                self.assertGreaterEqual(app.source_editor.winfo_height(), 100)
+                for widget in (app.capture_button, app.add_button, app.library_button, app.title_entry):
+                    self.assert_visible(widget)
+
     def test_busy_strip_keeps_source_and_editor_visible(self):
         app = self.create_app(1.67)
         app._jobs['synthetic'] = {'kind': 'ocr', 'started': 0, 'cancel': threading.Event()}

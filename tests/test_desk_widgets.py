@@ -5,6 +5,7 @@ import tempfile
 import tkinter as tk
 from types import SimpleNamespace
 import unittest
+from tests.tk_support import destroy_root
 from unittest.mock import Mock, patch
 
 from PIL import Image
@@ -17,7 +18,7 @@ class DeskWidgetTests(unittest.TestCase):
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.geometry('420x360')
-        self.addCleanup(self.root.destroy)
+        self.addCleanup(destroy_root, self.root)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)

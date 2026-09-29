@@ -4,6 +4,7 @@ from tkinter import scrolledtext, ttk
 
 from services.source_review import highlight_source
 from ui.desk_text import fingerprint
+from services.diagnostics import log_failure
 
 
 class LayoutMixin:
@@ -87,10 +88,11 @@ class LayoutMixin:
                 chrome = (self.editor_tabs.winfo_reqheight() - tab_height
                           + self.text_panel.winfo_reqheight() - self.source_editor.winfo_reqheight())
                 page_bar = self._page_bar.winfo_reqheight()
-                content_min = min(110, max(24, (extent - page_bar - chrome - 12) // 2))
+                content_min = min(100, max(24, (extent - page_bar - chrome - 12) // 2))
                 editor_height = chrome + content_min
                 upper = extent - editor_height - 7
-                lower = min(max(page_bar + content_min, int(extent * .40)), upper)
+                image_chrome = self.image_view.winfo_height() - self.image_view.canvas.winfo_height()
+                lower = min(max(page_bar + 5 + image_chrome + 150, int(extent * .40)), upper)
                 lower = max(1, lower)
             else:
                 lower, upper = image_min, extent - editor_min - 7
@@ -152,8 +154,19 @@ class LayoutMixin:
         header_width = (self._header_logo.winfo_reqwidth() + self._header_primary.winfo_reqwidth()
                         + self._header_secondary.winfo_reqwidth() + 52)
         wrapped_header = self.winfo_width() < header_width
-        self._header_primary.grid_configure(row=1 if wrapped_header else 0,
-            column=0 if wrapped_header else 1, columnspan=3 if wrapped_header else 1)
+        # The window title already names the app. Omit the decorative logo
+        # before spending a second row on actions in a short, narrow window.
+        if wrapped_header:
+            self._header_logo.grid_remove()
+        else:
+            self._header_logo.grid()
+        actions_wrap = self.winfo_width() < (self._header_primary.winfo_reqwidth()
+                                             + self._header_secondary.winfo_reqwidth() + 30)
+        self._header_primary.grid_configure(row=1 if actions_wrap else 0,
+            column=0 if wrapped_header else 1, columnspan=3 if actions_wrap else (2 if wrapped_header else 1))
+        self._header.configure(padding=(12, 3 if compact else 10))
+        self._capture_options.configure(padding=(12, 0, 12, 3 if compact else 8))
+        self._identity.configure(padding=(10, 0, 0, 3 if compact else 7))
         self._header_secondary.grid_configure(column=2)
         if compact:
             self._transfer_hint.pack_forget()
@@ -203,7 +216,8 @@ class LayoutMixin:
         from services.legacy_reader import read_legacy_records
         try:
             return self._readonly_view('기존 기록 · 읽기 전용', read_legacy_records(self.library.app_data_dir))
-        except Exception:
+        except Exception as error:
+            log_failure('desk_layout.show_legacy_records', error)
             self.status.set('기존 기록을 읽지 못했습니다. 원본 DB는 변경하지 않았습니다.')
 
     def show_output_history(self):
@@ -227,7 +241,8 @@ class LayoutMixin:
                     self._load_output(fresh)
                     self.editor_tabs.select(self.ai_panel)
                     window.destroy()
-                except Exception:
+                except Exception as error:
+                    log_failure('desk_layout.choose', error)
                     self.status.set('저장된 결과를 읽지 못했습니다. 현재 입력은 유지합니다.')
         ttk.Button(window, text='열기', command=choose).pack(pady=8)
         return window

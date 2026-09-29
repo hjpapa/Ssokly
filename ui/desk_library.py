@@ -1,6 +1,7 @@
 """Library, trash, label and page-organization actions for the capture desk."""
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
+from services.diagnostics import log_failure
 
 
 class LibraryMixin:
@@ -8,7 +9,8 @@ class LibraryMixin:
         previous = select_id or (self.document['id'] if self.document else None)
         try:
             records = self.library.list_documents(self.query.get(), trashed=self.show_trash.get())
-        except Exception:
+        except Exception as error:
+            log_failure('desk_library.refresh_library', error)
             self.status.set('보관함을 읽지 못했습니다. 기존 화면은 유지합니다.')
             return
         self._listing = {item['id']: item for item in records}
@@ -75,7 +77,8 @@ class LibraryMixin:
             self.library.add_text_page(doc['id'], '', source_name='직접 입력')
             self.refresh_library(doc['id'])
             self.open_document(doc['id'])
-        except Exception:
+        except Exception as error:
+            log_failure('desk_library.new_text_document', error)
             self.status.set('문서를 만들지 못했습니다. 저장 공간을 확인하세요.')
 
     def adopt_current(self):
@@ -94,7 +97,8 @@ class LibraryMixin:
                 self.library.add_text_page(doc['id'], self.library.document_text(self.document['id']), source_name='기존 통합 원문 사본')
             self.refresh_library(doc['id'])
             self.open_document(doc['id'])
-        except Exception:
+        except Exception as error:
+            log_failure('desk_library.adopt_current', error)
             self.status.set('가져오지 못했습니다. 기존 기록은 변경하지 않았습니다.')
 
     def toggle_trash(self):
@@ -115,7 +119,8 @@ class LibraryMixin:
             self._clear_document()
             self.refresh_library()
             self.status.set('복원했습니다.' if restore else '휴지통으로 옮겼습니다. 원본은 보존됩니다.')
-        except Exception:
+        except Exception as error:
+            log_failure('desk_library.toggle_trash', error)
             self.status.set('휴지통 상태를 저장하지 못했습니다.')
 
     def _clear_document(self):
@@ -154,7 +159,8 @@ class LibraryMixin:
             self.status.set('영구 삭제했습니다.' if not result['pending_files'] else
                             '목록에서 삭제했습니다. 사용 중인 일부 이미지 파일의 정리가 남아 있습니다.')
             return True
-        except Exception:
+        except Exception as error:
+            log_failure('desk_library._purge_snapshot', error)
             self.status.set('영구 삭제하지 못했습니다. 다른 창에서 변경했거나 파일을 사용 중일 수 있습니다. 휴지통을 새로고침하세요.')
             return False
 
@@ -169,7 +175,8 @@ class LibraryMixin:
             return False
         try:
             snapshot = self.library.trash_snapshot()
-        except Exception:
+        except Exception as error:
+            log_failure('desk_library.empty_trash', error)
             self.status.set('휴지통 목록을 읽지 못했습니다.')
             return False
         return self._purge_snapshot(snapshot)
@@ -231,7 +238,8 @@ class LibraryMixin:
             self.refresh_library()
             self.status.set('페이지를 삭제했습니다. 삭제한 페이지 · 복원에서 되돌릴 수 있습니다.')
             return True
-        except Exception:
+        except Exception as error:
+            log_failure('desk_library.delete_current_page', error)
             self.status.set('페이지를 삭제하지 못했습니다. 최신 문서 상태를 확인하세요.')
             return False
 
@@ -262,7 +270,8 @@ class LibraryMixin:
                         ('[문서 휴지통] ' if page['document_trashed'] else '') + page['document_title'],
                         f"{page['position'] + 1}쪽 · {page['source_name'] or '캡처'}"))
                 note.set(f'삭제한 페이지 {len(versions)}개')
-            except Exception:
+            except Exception as error:
+                log_failure('desk_library.refresh', error)
                 note.set('삭제한 페이지를 읽지 못했습니다.')
 
         def restore():
@@ -276,7 +285,8 @@ class LibraryMixin:
                 self.refresh_library()
                 refresh()
                 note.set('페이지를 복원했습니다.')
-            except Exception:
+            except Exception as error:
+                log_failure('desk_library.restore', error)
                 note.set('복원하지 못했습니다. 문서를 먼저 복원하거나 목록을 새로고침하세요.')
 
         actions = ttk.Frame(dialog, padding=10)
@@ -301,7 +311,8 @@ class LibraryMixin:
         document_id = self.document['id']
         try:
             names = list(self.library.label_counts())
-        except Exception:
+        except Exception as error:
+            log_failure('desk_library.choose_labels', error)
             self.status.set('라벨 목록을 읽지 못했습니다.')
             return
         dialog = tk.Toplevel(self)
@@ -349,7 +360,8 @@ class LibraryMixin:
             try:
                 for name, count in self.library.label_counts().items():
                     listing.insert('', 'end', values=(name, count))
-            except Exception:
+            except Exception as error:
+                log_failure('desk_library.refresh', error)
                 note.set('라벨을 읽지 못했습니다.')
 
         def rename():
@@ -372,7 +384,8 @@ class LibraryMixin:
                 note.set(f'{count}개 문서의 라벨을 변경했습니다.')
             except (ValueError, TypeError) as error:
                 note.set(str(error))
-            except Exception:
+            except Exception as error:
+                log_failure('desk_library.rename', error)
                 note.set('라벨 이름을 변경하지 못했습니다.')
 
         ttk.Button(dialog, text='선택 라벨 이름 변경', command=rename).pack(pady=8)
@@ -405,7 +418,8 @@ class LibraryMixin:
         target = dict(self.document)
         try:
             candidates = self.library.related_documents(target['id'])
-        except Exception:
+        except Exception as error:
+            log_failure('desk_library.show_merge_dialog', error)
             self.status.set('합칠 문서 목록을 읽지 못했습니다.')
             return
         dialog = tk.Toplevel(self)
@@ -446,7 +460,8 @@ class LibraryMixin:
                 dialog.destroy()
             except (ValueError, KeyError) as error:
                 note.set(str(error))
-            except Exception:
+            except Exception as error:
+                log_failure('desk_library.apply', error)
                 note.set('합치기를 완료하지 못했습니다. 원본 쪽은 유지합니다. 저장 상태를 확인하세요.')
 
         listing.bind('<<TreeviewSelect>>', summarize)
@@ -493,7 +508,8 @@ class LibraryMixin:
                 dialog.destroy()
             except (ValueError, KeyError) as error:
                 note.set(str(error))
-            except Exception:
+            except Exception as error:
+                log_failure('desk_library.apply', error)
                 note.set('분리를 완료하지 못했습니다. 원본 쪽은 유지합니다. 저장 상태를 확인하세요.')
 
         actions = ttk.Frame(dialog, padding=10)

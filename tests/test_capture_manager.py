@@ -101,6 +101,29 @@ class CaptureOrganizationTests(CaptureFixtures, unittest.TestCase):
 
 
 class CaptureManagerUiTests(CaptureFixtures, unittest.TestCase):
+    def test_default_captions_distinguish_pages_without_changing_storage(self):
+        before = self.library.capture_pages()
+        paths = [p['path'] for p in before]
+        captions = [self.manager.tree.item(p['id'], 'values')[0].split('\n')[0] for p in self.pages]
+        for number, caption in enumerate(captions, 1):
+            self.assertEqual(caption, f'Source · {number}쪽')
+        for page in self.pages:
+            detail = self.manager.tree.item(page['id'], 'values')[0].split('\n')[1]
+            self.assertRegex(detail, r'^\d{2}/\d{2} \d{2}:\d{2}:\d{2}$')
+        self.manager.query.set('2쪽')
+        self.manager.render()
+        self.assertEqual(self.manager.tree.get_children(), (self.pages[1]['id'],))
+        reopened = DocumentLibrary(self.temp.name).capture_pages()
+        self.assertEqual([p['source_name'] for p in reopened], [p['source_name'] for p in before])
+        self.assertEqual([p['path'] for p in reopened], paths)
+
+    def test_standalone_legacy_capture_has_display_position(self):
+        capture = self.library.capture_store.save(Image.new('RGB', (60, 40), 'red'))
+        self.manager.refresh()
+        row = next(p for p in self.manager.rows if p['capture_id'] == capture.id)
+        self.assertEqual(row['position'], 0)
+        self.assertIn('1쪽', self.manager.tree.item(row['id'], 'values')[0])
+
     def setUp(self):
         super().setUp()
         self.app = CaptureDeskApp(library=self.library)

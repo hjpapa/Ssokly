@@ -1,8 +1,22 @@
 """Visual capture organizer; all mutations go through versioned library methods."""
 import tkinter as tk
+from datetime import datetime
 from tkinter import ttk, messagebox, simpledialog
 
 from ui.desk_widgets import ZoomImageView, ThumbnailCache
+from services.diagnostics import log_failure
+
+
+def capture_display_name(page):
+    """Presentation only: preserve stored source names and image filenames."""
+    name = page.get('source_name', '')
+    if name and name != 'capture':
+        return name
+    caption = f"{page.get('document_title') or '캡처'} · {page['position'] + 1}쪽"
+    if page.get('captured_at'):
+        stamp = datetime.fromisoformat(page['captured_at']).astimezone()
+        caption += f' · {stamp:%m/%d %H:%M:%S}'
+    return caption
 
 
 class CaptureManager(tk.Toplevel):
@@ -143,7 +157,8 @@ class CaptureManager(tk.Toplevel):
             if self.label.get() not in names:
                 self.label.set('전체 라벨')
             self.render()
-        except Exception:
+        except Exception as error:
+            log_failure('capture_manager.refresh', error)
             self.rows = []
             self.by_id = {}
             self.tree.delete(*self.tree.get_children())
@@ -154,9 +169,9 @@ class CaptureManager(tk.Toplevel):
         selected = set(self.tree.selection())
         query = self.query.get().strip().casefold()
         rows = [p for p in self.rows if (self.label.get() == '전체 라벨' or self.label.get() in p['labels']) and
-                (not query or query in ' '.join([p['source_name'], p['document_title'], p['memo'], p['text'], p.get('ocr_text', ''), *p['labels']]).casefold())]
+                (not query or query in ' '.join([capture_display_name(p), p['source_name'], p['document_title'], p['memo'], p['text'], p.get('ocr_text', ''), *p['labels']]).casefold())]
         if self.sort.get() == '이름순':
-            rows.sort(key=lambda p: (p['source_name'].casefold(), p['id']))
+            rows.sort(key=lambda p: (capture_display_name(p).casefold(), p['id']))
         elif self.sort.get() == '문서·쪽 순':
             rows.sort(key=lambda p: (p['document_title'].casefold(), p['document_id'], p['position']))
         else:
@@ -167,8 +182,10 @@ class CaptureManager(tk.Toplevel):
             photo = self.cache.get(page.get('path'), (100, 78)) if page.get('path') else None
             if photo:
                 self.photos[page['id']] = photo
-            caption = page['source_name'] or '캡처'
+            caption = capture_display_name(page)
             detail = f"{page['document_title']} · {page['position'] + 1}쪽"
+            if page['source_name'] in ('', 'capture') and page.get('captured_at'):
+                caption, detail = caption.rsplit(' · ', 1)
             labels = ', '.join(page['labels']) or '라벨 없음'
             self.tree.insert('', 'end', iid=page['id'], text='' if photo else '이미지 없음',
                              values=(caption + '\n' + detail + '\n' + labels,), **({'image': photo} if photo else {}))
@@ -249,7 +266,7 @@ class CaptureManager(tk.Toplevel):
     def rename(self):
         try:
             page = self.selected(False)[0]
-            name = simpledialog.askstring('캡처 이름', '이 문서에서 표시할 캡처 이름', initialvalue=page['source_name'], parent=self)
+            name = simpledialog.askstring('캡처 이름', '이 문서에서 표시할 캡처 이름', initialvalue=capture_display_name(page), parent=self)
             if name is None:
                 return
             self.library.rename_page(page['id'], name, expected_updated_at=page['document_version'])
@@ -257,7 +274,8 @@ class CaptureManager(tk.Toplevel):
             self.note.set('캡처 이름을 변경했습니다.')
         except ValueError as error:
             self.note.set(str(error))
-        except Exception:
+        except Exception as error:
+            log_failure('capture_manager.rename', error)
             self.note.set('이름을 저장하지 못했습니다. 새로고침 후 다시 시도하세요.')
 
     def edit_details(self):
@@ -285,7 +303,8 @@ class CaptureManager(tk.Toplevel):
                 close()
             except ValueError as error:
                 note.set(str(error))
-            except Exception:
+            except Exception as error:
+                log_failure('capture_manager.save', error)
                 note.set('저장하지 못했습니다. 입력을 복사해 보관하고 새로고침하세요.')
         def close():
             dialog.destroy()
@@ -306,7 +325,8 @@ class CaptureManager(tk.Toplevel):
             self.note.set(f'{len(rows)}장을 휴지통으로 옮겼습니다.')
         except ValueError as error:
             self.note.set(str(error))
-        except Exception:
+        except Exception as error:
+            log_failure('capture_manager.trash', error)
             self.note.set('삭제하지 못했습니다. 새로고침 후 다시 시도하세요.')
 
     def move(self):
@@ -319,7 +339,8 @@ class CaptureManager(tk.Toplevel):
         except ValueError as error:
             self.note.set(str(error))
             return
-        except Exception:
+        except Exception as error:
+            log_failure('capture_manager.move', error)
             self.note.set('대상 문서를 읽지 못했습니다. 새로고침 후 다시 시도하세요.')
             return
         dialog = tk.Toplevel(self)
@@ -353,7 +374,8 @@ class CaptureManager(tk.Toplevel):
                 close()
             except ValueError as error:
                 note.set(str(error))
-            except Exception:
+            except Exception as error:
+                log_failure('capture_manager.apply', error)
                 note.set('이동하지 못했습니다. 새로고침 후 다시 시도하세요.')
         def close():
             dialog.destroy()

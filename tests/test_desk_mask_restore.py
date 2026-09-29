@@ -2,6 +2,7 @@
 from hashlib import sha256
 import tkinter as tk
 import unittest
+from tests.tk_support import destroy_root
 from unittest.mock import Mock, patch
 
 from PIL import Image
@@ -11,10 +12,19 @@ from ui.transfer_dialog import TransferDialog, choose_transfer
 
 
 class DeskMaskRestoreTests(unittest.TestCase):
+    def test_transfer_buttons_describe_reading_or_text_cleanup(self):
+        for kind, action in (('image', '읽기'), ('file', '읽기'), ('text', '정리')):
+            dialog = TransferDialog(self.root, kind=kind, image=self.image if kind == 'image' else None,
+                                    text='합성 문장', path='synthetic.pdf' if kind == 'file' else None)
+            self.assertEqual(dialog.direct_button.cget('text'), 'AI로 ' + action)
+            self.assertEqual(dialog.mask_button.cget('text'), '가리고 ' + action)
+            self.assertEqual(dialog.finish_button.cget('text'), '가린 내용으로 ' + action)
+            dialog.cancel()
+
     def setUp(self):
         self.root = tk.Tk()
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
+        self.addCleanup(destroy_root, self.root)
         self.image = Image.new('RGB', (30, 20), (40, 80, 120))
         self.image_policy = make_image_snapshot(self.image, rectangles=[(2, 3, 15, 12)]).policy
         self.combined = TransferPolicy('combined-synthetic', 'text', True, approved_text='',

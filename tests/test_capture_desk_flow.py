@@ -338,9 +338,12 @@ class CaptureDeskFlowTests(unittest.TestCase):
         doc = self.text_document()
         self.choose.return_value = make_text_snapshot(self.library.document_text(doc['id']))
         self.start.side_effect = lambda *args: CaptureDeskApp._start_job(self.app, *args)
-        with patch('ui.desk_jobs.threading.Thread') as worker:
+        with patch('ui.desk_jobs.threading.Thread') as worker, self.assertLogs('ssokly.diagnostics') as captured:
             worker.return_value.start.side_effect = RuntimeError('synthetic thread failure')
             self.app.generate()
+        self.assertTrue(any('desk_jobs.generate: RuntimeError' in line for line in captured.output))
+        self.assertNotIn('synthetic thread failure', ''.join(captured.output))
+        self.assertIn('AI 정리를 시작하지 못했습니다', self.app.status.get())
         self.assertEqual(self.app._jobs, {})
         self.ai.assert_not_called()
 
@@ -357,7 +360,7 @@ class CaptureDeskFlowTests(unittest.TestCase):
         self.assertEqual(progress.winfo_manager(), 'pack')
         progress.refresh(self.app._jobs, now=job['started'] + 35)
         self.assertIn('35초', progress.text.get())
-        self.assertIn('오래', progress.text.get())
+        self.assertRegex(progress.text.get(), '오래|지연 중')
         self.assertNotIn('%', progress.text.get())
         angle = progress.spinner.itemcget(progress.arc, 'start')
         progress.refresh(self.app._jobs, now=job['started'] + 35.1)

@@ -11,6 +11,7 @@ from services.transfer_policy import (
     ScopeExpansionRequired, TextRedactionDraft, TransferPolicy, TransferSnapshot, is_scope_reduction, make_file_snapshot, make_image_snapshot,
     make_text_snapshot, restore_image_snapshot, risk_candidates,
 )
+from services.diagnostics import log_failure
 
 
 def choose_transfer(parent, *, kind: str, text: str = "", image=None,
@@ -74,11 +75,12 @@ class TransferDialog:
         ttk.Label(body, text=caution, wraplength=810, foreground="#7a5426").pack(anchor="w", pady=(0, 8))
         controls = ttk.Frame(body)
         controls.pack(fill="x", pady=(0, 8))
-        self.direct_button = ttk.Button(controls, text="확인 후 그대로 분석" if candidates else "AI로 분석", command=self.accept_direct)
+        action = '정리' if kind == 'text' else '읽기'
+        self.direct_button = ttk.Button(controls, text=f"확인 후 그대로 {action}" if candidates else f"AI로 {action}", command=self.accept_direct)
         self.direct_button.pack(side="left")
         if previous is not None and previous.redacted:
             self.direct_button.configure(text="원본으로 전송 범위 확대…")
-        self.mask_button = ttk.Button(controls, text="가리고 분석", command=self.start_masking)
+        self.mask_button = ttk.Button(controls, text=f"가리고 {action}", command=self.start_masking)
         self.mask_button.pack(side="left", padx=8)
         ttk.Button(controls, text="취소", command=self.cancel).pack(side="left")
         self.note = tk.StringVar(value="아래에서 실제 전송 대상을 확인하세요.")
@@ -87,7 +89,7 @@ class TransferDialog:
         self.preview.pack(fill="both", expand=True)
         self.tools = ttk.Frame(body)
         self.tools.pack(fill="x", pady=(8, 0))
-        self.finish_button = ttk.Button(body, text="가린 내용으로 분석", command=self.accept_redacted)
+        self.finish_button = ttk.Button(body, text=f"가린 내용으로 {action}", command=self.accept_redacted)
         self.finish_button.pack(anchor="e", pady=(8, 0))
         self.finish_button.state(["disabled"])
         if kind == "text":
@@ -103,12 +105,12 @@ class TransferDialog:
                 try:
                     restore_image_snapshot(self.original_image, image_policy)
                     self.rectangles = list(image_policy.image_rectangles)
-                    self.note.set("이전 이미지 가림 위치를 복원했습니다. '가리고 분석'에서 확인하거나 추가로 가릴 수 있습니다. 문서의 전송 범위는 별도로 확인합니다.")
+                    self.note.set("이전 이미지 가림 위치를 복원했습니다. '가리고 읽기'에서 확인하거나 추가로 가릴 수 있습니다. 문서의 전송 범위는 별도로 확인합니다.")
                 except ValueError:
                     self.note.set("원본 이미지가 바뀌어 이전 가림 위치를 재사용하지 않았습니다. 필요한 영역을 다시 선택해 주세요.")
             self._show_image()
         elif kind == "file":
-            ttk.Label(self.preview, text=f"선택한 파일: {self.path.name if self.path else '(없음)'}\n\n'AI로 분석'은 선택한 원본 파일 전체를 전송합니다.\n가리려면 '가리고 분석'에서 필요한 텍스트만 붙여넣거나 페이지 이미지를 선택하세요.",
+            ttk.Label(self.preview, text=f"선택한 파일: {self.path.name if self.path else '(없음)'}\n\n'AI로 읽기'는 선택한 원본 파일 전체를 전송합니다.\n가리려면 '가리고 읽기'에서 필요한 텍스트만 붙여넣거나 페이지 이미지를 선택하세요.",
                       wraplength=790).pack(anchor="nw", pady=12)
         else:
             self.cancel()
@@ -203,7 +205,8 @@ class TransferDialog:
             self.rectangles = []
             self._show_image()
             self.note.set("선택한 페이지 이미지만 전송됩니다. 필요한 부분을 드래그로 가려 주세요. 원본 문서는 첨부하지 않습니다.")
-        except Exception:
+        except Exception as error:
+            log_failure('transfer_dialog.select_page_image', error)
             messagebox.showerror("이미지 열기 실패", "페이지 이미지를 열지 못했습니다. 원본 파일로 대체해 보내지 않습니다.", parent=self.window)
 
     def _point(self, event):
@@ -255,7 +258,8 @@ class TransferDialog:
                 self.result = make_image_snapshot(self.original_image)
             else:
                 self.result = make_file_snapshot(self.path)
-        except Exception:
+        except Exception as error:
+            log_failure('transfer_dialog.accept_direct', error)
             messagebox.showerror("전송 사본 생성 실패", "전송용 사본을 만들지 못했습니다. 요청을 시작하지 않았습니다.", parent=self.window)
             return
         self.window.destroy()
@@ -296,7 +300,8 @@ class TransferDialog:
         except ValueError as exc:
             messagebox.showerror("가림 확인", str(exc), parent=self.window)
             return
-        except Exception:
+        except Exception as error:
+            log_failure('transfer_dialog.accept_redacted', error)
             messagebox.showerror("가림 실패", "가린 사본을 만들지 못했습니다. 원본으로 대체해 보내지 않습니다.", parent=self.window)
             return
         self.window.destroy()

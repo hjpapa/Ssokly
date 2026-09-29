@@ -21,6 +21,7 @@ class JobProgress(ttk.Frame):
 
     def _resize(self, event):
         self.label.configure(wraplength=max(180, event.width - 190))
+        self.master._schedule_layout()
 
     def refresh(self, jobs, now=None):
         active = [job for job in jobs.values() if not job['cancel'].is_set()]
@@ -42,7 +43,14 @@ class JobProgress(ttk.Frame):
             label = '취소됨 · 전송 종료 대기'
             hint = '결과는 적용하지 않습니다. 종료 후 재실행하세요.'
         self.cancel_button.configure(state='normal' if active else 'disabled')
-        self.text.set(f'{label} · {clock}\n{hint}')
+        compact = self.master.winfo_width() <= 800
+        if compact:
+            suffix = ' · 지연 중' if active and elapsed >= 30 else ''
+            self.text.set(f'{label} · {clock}{suffix}')
+        else:
+            self.text.set(f'{label} · {clock}\n{hint}')
+        self.configure(padding=(12, 0 if compact else 6))
+        self.label.configure(font=('Malgun Gothic', 9 if compact else 10))
         self.spinner.itemconfigure(self.arc, start=-(int(now * 240) % 360))
         if not self.winfo_manager():
             self.pack(fill='x', before=self.master.main_split)

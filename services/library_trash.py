@@ -4,6 +4,7 @@ import sqlite3
 from uuid import uuid4
 
 from services.document_library import LibraryConflictError, LibraryReadOnlyError
+from services.diagnostics import log_failure
 
 
 def purge_trash(library, snapshot):
@@ -84,13 +85,15 @@ def purge_trash(library, snapshot):
                             original.replace(staged)
                             staged_files.append((original, staged))
                         db.execute('DELETE FROM captures.capture_items WHERE id=?', (capture_id,))
-    except Exception:
+    except Exception as error:
+        log_failure('library_trash.purge_trash', error)
         library.capture_store._restore_staged_files(staged_files)
         raise
     pending_files = 0
     for original, staged in staged_files:
         try:
             staged.unlink(missing_ok=True)
-        except OSError:
+        except OSError as error:
+            log_failure('library_trash.purge_trash', error)
             pending_files += 1
     return {'documents': len(documents), 'pages': len(removed_pages), 'pending_files': pending_files}
