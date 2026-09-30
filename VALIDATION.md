@@ -4,6 +4,34 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## 폴더형 덮어쓰기 확인 — 2026-09-30 / 05
+
+기존 앱 종료 확인 후 검증된 `.local-results/ui-build-stage/Ssokly`를 `dist/Ssokly`로 덮어씀. 파일 집합 및 **1,136개 파일 SHA256 모두 일치**, 추가 파일 없음. 실제 목적지 EXE 자가검사 종료 0·passed true·frozen true. Python 경로 제거 및 다른 작업 폴더에서 Tk·PDFium 렌더·DOCX/PPTX/XLSX/RTF·임시 캡처 저장/재열기·표 검증 통과. API 0회, 사용자 저장소 미사용. 보고서 `.local-results/portable-overwrite-check.json`. 전체 회귀와 운영 API는 재실행하지 않음. 설치형은 /04 산출물 유지.
+
+## 상단 버튼 잘림·표 행 높이 — 2026-09-30 / 04
+
+| 검사 | 결과 |
+| --- | --- |
+| 상단 버튼 새 테스트 | 100/125/150/175/200/225/250/300% 모두 글자 폭+좌우 여백 충족, 배치/요청 폭 충족 |
+| 최종 `tools/verify_capture_desk.py --all` | 545개 통과, 179.289초, 실패·오류·건너뜀·통신 시도 0 |
+| 최종 `tests.test_capture_desk_layout tests.test_desk_widgets` | 27개 통과, 54.896초 |
+| `tools/evaluate_desk_usability.py --output .local-results/usability/header-fix-20260930.json` | 192개 조합, 기준 위반 0 |
+| 720×680 합성 미리보기 | 상단 + 페이지·파일 열기 글씨 끝/여백 이미지 확인 |
+| `tools/verify_v2_release.py` | 159개 통과, 3.227초, 통신 시도 0 |
+| `tools/verify_reopen_flow.py` | passed true, 캡처 3개·프로세스 2개 |
+| `node --test backend/test/*.test.js` | 16개 통과 |
+| 운영 합성 01 OCR/요약 | 유료 2회 HTTP 200 완료, 전체 4.606/4.572초, 상류 3.594/4.012초 |
+| 제출물 회귀 `tests.test_ai_relay` | 14개 통과, 0.972초. task- 파일명 오탐 수정, 합성 sk- 및 sk-proj- 차단 확인 |
+| 최종 V2 재실행 | 159개 통과, 3.210초, 통신 시도 0 |
+| 설치형/폴더형 자가검사 | 둘 다 frozen true·passed true·종료 0, Python PATH 제거·다른 작업 디렉터리. API 0회 |
+| 갱신 설치형 설치·제거 | 격리 시험 경로 설치/실행/제거 각 종료 0 |
+
+초기 집중 27개 실행에서 신규 테스트의 Tcl_Obj 변환 오류 1개 발생, 문자열 변환 후 신규 8배율 테스트 1개(8.362초) 통과. 표 기본 행 20px가 150% 글꼴 linespace 28px보다 작았음도 확인해 linespace+8로 수정. 창/배율 조합은 모의 Tk 검사이며 모든 모니터나 보조창 검증은 아님. 사용자 제보 위치를 기준으로 상단 버튼을 수정. API 지시문/모델 변경 없음. 운영 배포 `dpl_D5MLkuLNzkXQiLEHkABsrWgefpoW` READY 및 기존 별칭 확인. 로컬 키를 사용하지 않은 중계 호출 2회, 이전 유료 호출 수와 별도.
+
+첫 전체 검사 544개 중 제출물 키 검사 오탐 1개(174.433초). 실제 비밀값 없음: 이전 문서의 task-quality 파일명 내부 sk-를 잘못 매칭. 토큰 시작 경계 보완 후 오탐/진짜 키 형태 차단 회귀 추가. 앱 실행 코드와 무관한 빌드 도구 변경이라 EXE에 포함되는 코드에는 변화 없음.
+
+설치 파일 `dist/Ssokly-Setup-0.1.0-x64.exe` 덮어쓰기 완료, 24,929,361바이트. SHA256 `B86D9186A1FD17FEA6DADA8E2937D7DF740DA6C30873ECEF6A8766D5D371C18E`. 새 폴더형은 `.local-results/ui-build-stage/Ssokly`에서 검증 완료, 기존 `dist/Ssokly` 앱이 실행 중이라 정상 종료 후 교체 대기. 최종 패키지 검증 결과는 `.local-results/{installed-ui-check,portable-ui-check}.json`에 보관. 실제 Python 미설치 별도 PC·서명·모든 보조창·EXE 실제 API 전송은 이번 미검증.
+
 ## 운영 배포·실제 품질·설치본 — 2026-09-30 / 02
 
 운영 배포 `dpl_FBTbfscTezBz61bX8fkVPiGzETjA` READY, 기존 운영 별칭 연결. 첫 Not authorized 이후 whoami 성공·배포 재시도 성공. 같은 합성 공문 02/06의 일정 분석 총 **4회 유료 완료**(직접 2, 중계 2). 승인된 기존 로컬 키만 직접 검증에 사용, 운영 중계 검증은 로컬 키 로드 금지. 이번 OCR/요약 추가 호출 없음.

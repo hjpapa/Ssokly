@@ -157,6 +157,20 @@ class RelayTests(unittest.TestCase):
             client.put.return_value = Mock(status_code=200)
             self.assertEqual(ai_relay.request_relay(payload), 'completed')
 
+    def test_submission_secret_scan_distinguishes_task_filenames(self):
+        from tools import build_submission
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'README.md'
+            with patch.object(build_submission, 'ROOT', root), \
+                    patch.object(build_submission.subprocess, 'check_output', return_value='README.md\n'):
+                source.write_text('task-quality-direct-20260930.json', encoding='utf-8')
+                self.assertEqual(build_submission.build('https://example.test', root / 'safe.zip'), 3)
+                for prefix in ('sk-', 'sk-proj-'):
+                    source.write_text('key="' + prefix + 'synthetic' * 8 + '"', encoding='utf-8')
+                    with self.assertRaisesRegex(ValueError, 'Possible secret'):
+                        build_submission.build('https://example.test', root / 'blocked.zip')
+
     def test_submission_excludes_secrets_and_user_data(self):
         from tools.build_submission import build
         import zipfile

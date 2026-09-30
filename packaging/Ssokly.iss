@@ -1,3 +1,7 @@
+#ifndef AppSource
+  #define AppSource "..\dist\Ssokly"
+#endif
+
 [Setup]
 AppId={{755C3585-5F6A-48F5-BAEA-0A57BB25B1C9}
 AppName=Ssokly
@@ -24,7 +28,7 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: desktopicon; Description: "바탕화면 바로가기 만들기"; Flags: unchecked
 
 [Files]
-Source: "..\dist\Ssokly\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#AppSource}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Ssokly"; Filename: "{app}\Ssokly.exe"

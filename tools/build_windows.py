@@ -1,5 +1,6 @@
 """Build a keyless Windows folder distribution; never copies workspace data."""
 import json
+import argparse
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,16 +11,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dist-dir', type=Path, default=ROOT / 'dist',
+                        help='Alternate staging directory while an existing release is running.')
+    args = parser.parse_args()
+    distribution_root = args.dist_dir.resolve()
     subprocess.run([
         sys.executable, '-m', 'PyInstaller', '--noconfirm', '--windowed',
         '--onedir', '--name', 'Ssokly', '--paths', str(ROOT),
-        '--distpath', str(ROOT / 'dist'),
+        '--distpath', str(distribution_root),
         '--workpath', str(ROOT / '.local-results/pyinstaller'),
         '--specpath', str(ROOT / '.local-results'),
         '--collect-all', 'pypdfium2_raw',
         str(ROOT / 'packaging/windows_entry.py'),
     ], cwd=ROOT, check=True)
-    destination = ROOT / 'dist/Ssokly'
+    destination = distribution_root / 'Ssokly'
     config = json.loads((ROOT / 'ai-server.json').read_text(encoding='utf-8'))
     if config != {'url': 'https://ssokly-ai-relay.vercel.app'}:
         raise ValueError('Unexpected release relay configuration')

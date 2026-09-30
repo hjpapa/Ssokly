@@ -27,7 +27,7 @@ def build(url, output):
         if source.is_symlink():
             raise ValueError('Submission refuses symlinks.')
         data = source.read_bytes()
-        if re.search(rb'sk-(?:proj-)?[A-Za-z0-9_-]{20,}', data):
+        if re.search(rb'(?<![A-Za-z0-9_])sk-(?:proj-)?[A-Za-z0-9_-]{20,}', data):
             raise ValueError('Possible secret found; submission stopped.')
         entries[name] = data
     entries['ai-server.json'] = json.dumps({'url': url.rstrip('/')}, indent=2).encode()

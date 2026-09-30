@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from tkinter import font as tkfont, ttk
 from unittest.mock import patch
 
 from PIL import Image
@@ -14,6 +15,30 @@ from ui.capture_desk import CaptureDeskApp
 
 
 class CaptureDeskLayoutTests(unittest.TestCase):
+    def test_header_buttons_fit_korean_glyphs_at_all_supported_scales(self):
+        for percent in (100, 125, 150, 175, 200, 225, 250, 300):
+            app = self.create_app(percent / 75)
+            app.geometry('720x680')
+            app.update()
+            style = ttk.Style(app)
+            for button in app._header_primary.winfo_children():
+                button_style = button.cget('style') or 'TButton'
+                font = tkfont.Font(root=app, font=style.lookup(button_style, 'font'))
+                padding = tuple(int(str(value)) for value in app.tk.splitlist(style.lookup(button_style, 'padding')))
+                with self.subTest(percent=percent, text=button.cget('text')):
+                    self.assert_visible(button)
+                    self.assertGreaterEqual(button.winfo_width(), font.measure(button.cget('text')) + 2 * padding[0])
+                    self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth())
+
+    def test_table_row_height_follows_scaled_font(self):
+        for percent in (100, 150, 200, 300):
+            app = self.create_app(percent / 75)
+            # Apply the theme again after the test helper changes Tk scaling.
+            from ui.desk_theme import apply_theme
+            style = apply_theme(app)
+            font = tkfont.Font(root=app, font=style.lookup('Treeview', 'font'))
+            self.assertGreaterEqual(int(style.lookup('Treeview', 'rowheight')), font.metrics('linespace') + 8)
+
     def test_notice_tab_reserves_both_original_and_result_at_minimum_size(self):
         app = self.create_app(2.0)
         app.geometry('720x680')

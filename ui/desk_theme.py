@@ -48,6 +48,7 @@ def apply_theme(root):
                     borderwidth=0, font=('Malgun Gothic', 10))
     style.map('Treeview', background=[('selected', '#d6efeb')], foreground=[('selected', '#064e50')])
     linespace = tkfont.Font(root=root, family='Malgun Gothic', size=10).metrics('linespace')
+    style.configure('Treeview', rowheight=linespace + 8)
     style.configure('Desk.Treeview', rowheight=max(82, linespace * 3 + 14))
     root.window_icon = ImageTk.PhotoImage(brand_mark(64), master=root)
     root.brand_icon = ImageTk.PhotoImage(brand_mark(34), master=root)
