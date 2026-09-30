@@ -4,6 +4,19 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## 가림 수정본 실행파일 반영 — 2026-09-30 / 09
+
+기능 커밋 **0539131** main 게시 후 `tools/build_windows.py --dist-dir .local-results/mask-release-stage`로 빌드. 사용자 앱 종료 확인 후 기존 폴더형 덮어쓰기, Inno Setup 6.7.3으로 기존 설치형 재생성. 폴더형 **1,136개 파일 집합·SHA256 모두 스테이징과 일치**.
+
+스테이징/최종 폴더형/실제 설치본에서 Python PATH·PYTHONPATH·PYTHONHOME 제외 및 다른 작업 폴더로 실행한 자가검사 모두 **passed true, frozen true, 종료 0**. Tk, PDFium 렌더, DOCX/PPTX/XLSX/RTF, 임시 캡처 저장/재열기, 표, OpenAI/httpx, 업무 이미지 미리보기 통과. 실제 설치와 시험 설치 제거 종료 0, 시험 등록 정보 제거 확인. 사용자 저장소 미사용. 보고서는 `.local-results/mask-stage-selftest.json`, `mask-portable-selftest.json`, `mask-installed-selftest.json`, `mask-install.log`, `mask-release-manifest.json`.
+
+| 산출물 | 크기 | SHA256 |
+| --- | --- | --- |
+| `dist/Ssokly/Ssokly.exe` | 6,702,095 bytes | `F7B0CC6D915EA9563CDF95241ACA174F835E36198399B8172B2CAF2768549087` |
+| `dist/Ssokly-Setup-0.1.0-x64.exe` | 24,939,646 bytes | `D3B40A50572A2DD16CF78F32971A90B551956E193D9B6AAE0A4381D53FB13A2F` |
+
+소스는 /08 전체 567개·V2 159개·재열기 검증을 통과한 수정본으로, 이번 턴에서는 전체 회귀·API를 재실행하지 않았다. 실제 API 0회, backend 변경/재배포 없음. 별도 Python 미설치 PC와 모든 물리 모니터는 미검증. README·STATUS·VALIDATION 및 공백 검사 완료. 기존 미추적 `docs/`는 커밋에서 제외했다.
+
 ## 가림 실행·보관함 유지 — 2026-09-30 / 08
 
 - 최종 `python tools/verify_capture_desk.py --all`: **567개 통과**, 196.670초, 실패·오류·건너뜀·통신 시도 0. 아래 초기/집중 결과와 구분한다.
