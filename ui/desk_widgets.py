@@ -380,7 +380,7 @@ class InlineTableView(ttk.Frame):
             self.tree.column(i, width=max(90, min(380, measured)), minwidth=60, stretch=False)
         for i, row in enumerate(block.rows):
             notice = ' · 확인' if review_spans('\t'.join(row)) else ''
-            self.tree.insert('', tk.END, iid=str(i), text=f'{block.start_line + i}행{notice}',
+            self.tree.insert('', tk.END, iid=str(i), text=f'{block.line_number(i)}행{notice}',
                              values=row + [''] * (len(columns) - len(row)))
         self.tree.xview_moveto(0)
         self.tree.yview_moveto(0)
@@ -402,7 +402,7 @@ class InlineTableView(ttk.Frame):
         block = self.blocks[self.selected_table]
         row_index = int(selection[0])
         values = block.rows[row_index]
-        self._set_detail(f'원문 {block.start_line + row_index}행 · ↳ 병합 이어짐\n' + '\n'.join(
+        self._set_detail(f'원문 {block.line_number(row_index)}행 · ↳ 병합 이어짐\n' + '\n'.join(
             f'열 {i + 1}: {value if value else "(빈 셀)"}' for i, value in enumerate(values)))
 
     def copy_row(self):

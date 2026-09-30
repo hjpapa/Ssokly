@@ -4,6 +4,21 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## 업무 주체·파이프 표 보완 — 2026-09-29 / 12
+
+| 검사 | 결과 |
+| --- | --- |
+| `python tools/verify_capture_desk.py --all` | 542개 통과, 132.499초, 실패·오류·건너뜀·통신 시도 0 |
+| `python -m unittest tests.test_text_actions tests.test_ai_relay tests.test_source_review -q` | 36개 통과, 1.030초 |
+| `python -m unittest tests.test_desk_widgets tests.test_source_tables_ui -q` | 14개 통과, 4.497초 |
+| `python tools/verify_v2_release.py` | 159개 통과, 3.059초, 통신 시도 0 |
+| `python tools/verify_reopen_flow.py` | passed true, 캡처 3개·프로세스 2개 |
+| backend `node --test test/*.test.js` | 16개 통과 |
+| 저장된 /09 실제 OCR 04 재해석 | Luna none/low 각각 표 1개·3행·4열. nano는 손상된 머리글 제외 2행·4열 |
+| `tools/preview_capture_desk.py --geometry 720x680` | 격리 합성 저장소, mainloop 자동 종료 래퍼로 실행·화면 이미지 확인. 표 행 번호·TSV 복사는 별도 Tk 회귀에서 확인 |
+
+초기 회귀에서 테두리 없는 파이프 표의 빈 마지막 셀을 제거하던 오류를 확인하고 외곽 테두리가 양쪽에 있을 때만 제거하도록 수정. 기존 TSV/HWPX 단일 행·빈 셀 보존 유지. 원문 수정 없음. 앱/서버 프롬프트 export 동기화 및 계약 검사 통과. 유료 검증 승인 대기이며 현재까지 이번 API 호출 0회. 지시문 존재 검사는 모델 정확도 검증과 구분. 운영 반영 전 로컬 수정본이다.
+
 ## 운영 Vercel 처리 시간 — 2026-09-29 / 11
 
 사용자 요청으로 기존 가상 공문 01~03을 각각 OCR→요약. `python tools/evaluate_official_documents.py --live --case 01 --case 02 --case 03 --output .local-results/luna-latency-20260929`를 프로젝트 가상환경에서 실행. 운영 주소·모델 정책은 /10과 동일. **유료 6회 전부 HTTP 200·완료**, 재시도 없음. 로컬 키 로드를 차단. 조건·미정 정보 대조 및 자동 검사에서 이번 표본의 오류 없음.

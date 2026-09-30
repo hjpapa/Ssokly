@@ -1,9 +1,30 @@
 import unittest
-from services.source_review import review_spans, tabular_blocks
+from services.source_review import review_spans, tabular_blocks, source_table_blocks
 from services.analysis_document import AnalysisDocument, render_document
 
 
 class SourceReviewTests(unittest.TestCase):
+    def test_pipe_ocr_preserves_empty_cells_and_dates(self):
+        source = '설명\n행사 | 행사 일시 | 결과 보고 | 담당\n체험 | 10월 2일 | 10월 5일 |\n끝'
+        block = source_table_blocks(source)[0]
+        self.assertEqual(block.rows[1], ['체험', '10월 2일', '10월 5일', ''])
+        self.assertEqual(block.source_lines, [2, 3])
+
+    def test_markdown_borders_alignment_and_escaped_pipe(self):
+        source = '설명\n| 항목 | 값 |\n| :--- | ---: |\n| 가\\|나 | |\n| 다음 | 2 |'
+        block = source_table_blocks(source)[0]
+        self.assertEqual(block.rows, [['항목', '값'], ['가|나', ''], ['다음', '2']])
+        self.assertEqual([block.line_number(i) for i in range(3)], [2, 4, 5])
+
+    def test_pipe_prose_and_inconsistent_columns_are_not_guessed(self):
+        for source in ('선택 A | B', 'a|b\nc|d', 'A | B\nC | D | E'):
+            self.assertEqual(source_table_blocks(source), [])
+
+    def test_tsv_and_pipe_blocks_remain_separate(self):
+        blocks = source_table_blocks('a\tb\nc\td\nA | B\nC | D')
+        self.assertEqual([b.start_line for b in blocks], [1, 3])
+        self.assertEqual(len(blocks), 2)
+
     def test_only_uncertain_or_invalid_dates_are_red(self):
         text = '안내 10월 2일 14시 30분 25,000원 30명 010-1234-5678 ⟦불확실:교무실⟧'
         spans = [text[a:b] for a,b in review_spans(text)]

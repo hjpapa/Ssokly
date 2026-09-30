@@ -169,6 +169,20 @@ class DeskWidgetTests(unittest.TestCase):
         cache.clear()
         self.assertEqual(len(cache), 0)
 
+    def test_pipe_table_shows_original_line_and_copies_tsv(self):
+        copied = Mock()
+        view = InlineTableView(self.root, on_copy=copied)
+        self.layout(view)
+        source = '설명\n| 행사 | 보고 |\n| --- | --- |\n| 10월 2일 | 10월 5일 |'
+        view.set_text(source)
+        self.assertEqual(view.tree.item('1', 'text'), '4행')
+        view.tree.selection_set('1')
+        view.show_row()
+        self.assertIn('원문 4행', view.detail.get('1.0', 'end-1c'))
+        view.copy_row()
+        copied.assert_called_with('10월 2일\t10월 5일')
+        self.assertEqual(view.source_text, source)
+
     def test_inline_table_source_lines_empty_merged_and_read_only(self):
         copied = Mock()
         view = InlineTableView(self.root, on_copy=copied)

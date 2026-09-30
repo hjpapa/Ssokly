@@ -14,6 +14,14 @@ def response(text='완성된 합성 결과', **changes):
 
 
 class TextActionsTests(unittest.TestCase):
+    def test_tasks_preserve_actor_and_do_not_invent_school_work(self):
+        for audience in AUDIENCES:
+            instructions = build_instructions('일정·할 일 정리', audience)
+            for rule in ('학교나 교직원이 수행한다고 명시된 행동만',
+                         '학교가 신청을 취합하거나 담임에게 전달하는 업무로 바꾸지 않는다',
+                         '주체 미명시', '미정·미기재·붙임 미제공'):
+                self.assertIn(rule, instructions)
+
     def test_summary_does_not_turn_settings_or_source_lines_into_facts_or_forms(self):
         for audience in AUDIENCES:
             instructions = build_instructions('요약', audience)
