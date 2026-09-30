@@ -25,7 +25,18 @@
 
 지원 형식: BMP/CSV/DOCX/HTML/HWPX/JPEG/JPG/JSON/MD/ODP/ODS/ODT/PDF/PNG/PPTX/RTF/TSV/TXT/WebP/XLSX/XML. 공문 시나리오는 필수 제출, 희망자·미회신, 없음 회신, 표와 날짜 연결, 주체 구분 등 기존 10종을 사용한다. 모델 응답은 이 넓은 기능 검사에서 모의 처리했으므로 실제 모델 30회 검증으로 해석하지 않는다.
 
-미검증: 외부 앱별 실제 붙여넣기, 물리 다중 모니터, Python 없는 별도 PC, 모든 실물 공문의 AI 정확도. 실행파일 최종 결과는 완료 후 아래에 추가한다.
+미검증: 외부 앱별 실제 붙여넣기, 물리 다중 모니터, Python 없는 별도 PC, 모든 실물 공문의 AI 정확도.
+
+패키징은 기능 커밋 **bb1db8f**를 게시한 뒤 실행했다. `tools/build_windows.py --dist-dir .local-results/image-release-stage` 성공(PyInstaller 6.22.3, Python 3.9.7). Inno Setup 6.7.3으로 기존 Setup 경로 갱신. 앱 실행 중이 아님을 확인해 기존 `dist/Ssokly`를 덮어썼고 스테이징과 **1,136개 파일 집합·SHA256 모두 일치**했다.
+
+스테이징 EXE, 최종 폴더형 EXE, 실제 설치한 EXE 각각 PATH에서 Python 제거·PYTHONPATH/PYTHONHOME 제거·다른 작업 폴더에서 자가검사 **종료 0 / passed true / frozen true**. Tk, PDFium 실제 렌더, DOCX/PPTX/XLSX/RTF, 임시 캡처 보관/재열기, 표, OpenAI/httpx, 새 업무 이미지 미리보기 확인. API 추가 호출 0. 실제 Setup을 기존 등록 설치가 없는 상태에서 작업용 폴더에 설치(종료 0), 검증 후 그 경로만 제거(종료 0), 시험 등록 정보 삭제 확인. 사용자 데이터 저장소는 사용하지 않았다.
+
+| 산출물 | 크기 | SHA256 |
+| --- | --- | --- |
+| `dist/Ssokly/Ssokly.exe` | 6,701,436 bytes | `DE522B9B711D1DEFA1349AEFF6787468D6A7F0FE1CD90BA0B959A540AEEE0F21` |
+| `dist/Ssokly-Setup-0.1.0-x64.exe` | 24,937,203 bytes | `5C78E7DC63930827A0256CCAF1DA75819C17B2F267047352D34024E04BBE6590` |
+
+자가검사·설치 로그·해시 목록은 `.local-results/work-image`의 `stage-selftest.json`, `portable-selftest.json`, `installed-selftest.json`, `install.log`, `release-manifest.json`에 보관. 설치형/무설치 산출물은 Git 제외. 별도 제출 ZIP 생성 안 함. 마지막 문서 갱신 이후에는 공백/상태 검사만 수행하며 API·전체 테스트를 중복 실행하지 않았다.
 
 ## 업무 이미지 — 2026-09-30 / 06
 
