@@ -69,7 +69,8 @@ def evaluate(percentages=(100, 125, 150, 175, 200, 225, 250, 300)):
                         else:
                             widgets.update(title=app.title_entry, original=app.image_view.canvas)
                             if state == 'notice':
-                                widgets.update(generate=app.generate_button, audience=app.audience_picker, editor=app.output_editor)
+                                widgets.update(generate=app.generate_button, audience=app.audience_picker,
+                                               editor=app.output_editor, work_image=app.work_image_button)
                             else:
                                 widgets.update(editor=app.source_editor, read=app.read_button)
                         issues = [name + '_clipped' for name, w in widgets.items() if not visible(w, app)]

@@ -7,10 +7,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from services.ocr_service import OCR_PROMPT
 from services.text_actions import MODES, AUDIENCES, build_instructions
+from services.work_image import PROMPT
 
 
 def bundle():
-    return {'ocr': OCR_PROMPT, 'actions': {
+    return {'ocr': OCR_PROMPT, 'work_image': PROMPT, 'actions': {
         mode: {audience: build_instructions(mode, audience) for audience in AUDIENCES}
         for mode in MODES}}
 

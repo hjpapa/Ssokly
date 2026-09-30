@@ -2,6 +2,8 @@
 
 로그인 없이 POST `/api/ai`를 사용한다. 서버가 OpenAI를 호출하고 완성된 텍스트만 반환한다. 데스크톱에는 서버 주소만 배포하며 API 키를 내려주는 경로는 없다.
 
+업무 이미지 생성은 POST `/api/image`에 `{"text":"확인한 결과 사본"}`을 보낸다. GPT-Image-2.5 Flare, high, 1024×1536, PNG, 1장으로 고정하고 완성된 PNG 바이트를 `Cache-Control: no-store`로 반환한다. 임의 모델·옵션·URL은 받지 않는다. 서버/앱 자동 재시도나 자체 길이·횟수 제한은 없다. 플랫폼 응답 크기 한도는 적용된다. 앱과 같은 지시문은 `tools/export_relay_prompts.py`로 생성한다. 이 경로의 운영 배포 여부는 루트 STATUS 기록을 확인한다.
+
 ## 배포
 
 Node.js 24와 Vercel CLI 사용. 이 `backend` 폴더를 프로젝트 루트로 선택한다. 저장소 전체를 배포하지 않는다.

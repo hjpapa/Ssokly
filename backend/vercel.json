@@ -2,6 +2,6 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["icn1"],
   "outputDirectory": "public",
-  "functions": { "api/ai.js": { "maxDuration": 300 }, "api/cleanup.js": { "maxDuration": 300 } },
+  "functions": { "api/ai.js": { "maxDuration": 300 }, "api/image.js": { "maxDuration": 300 }, "api/cleanup.js": { "maxDuration": 300 } },
   "crons": [{ "path": "/api/cleanup", "schedule": "0 18 * * *" }]
 }

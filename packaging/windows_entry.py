@@ -21,6 +21,10 @@ def self_test(report_path):
     from services.document_library import DocumentLibrary
     from services.ai_relay import server_url
     from services.source_review import source_table_blocks
+    from services.work_image import image_request, validate_png
+    from ui.work_image import WorkImageWindow
+    import io
+    import time
     _enable_windows_dpi_awareness()
     with tempfile.TemporaryDirectory(prefix='ssokly-package-test-') as temporary:
         root = Path(temporary)
@@ -48,6 +52,17 @@ def self_test(report_path):
             app.update_idletasks()
             assert len(app.library.list_documents()) == 1
             assert len(source_table_blocks('A | B\nC | D')) == 1
+            sample = io.BytesIO()
+            Image.new('RGB', (100, 150), 'white').save(sample, 'PNG')
+            assert image_request('합성 업무')['model'] == 'gpt-image-2.5-flare'
+            dialog = WorkImageWindow(app, '합성 업무 · 희망자만')
+            dialog.started = time.monotonic()
+            dialog.results.put((validate_png(sample.getvalue()), '합성 업무 · 희망자만', None))
+            dialog.poll()
+            app.update_idletasks()
+            assert dialog.data == sample.getvalue()
+            assert dialog.view._image.size == (100, 150)
+            dialog.close()
         finally:
             for callback in app.tk.splitlist(app.tk.call('after', 'info')):
                 app.after_cancel(callback)
@@ -58,7 +73,7 @@ def self_test(report_path):
         'passed': True, 'frozen': bool(getattr(sys, 'frozen', False)),
         'python': sys.version.split()[0], 'relay': server_url(),
         'checks': ['Tk', 'PDFium render', 'DOCX', 'PPTX', 'XLSX', 'RTF',
-                   'capture persistence', 'pipe table', 'OpenAI/httpx imports'],
+                   'capture persistence', 'pipe table', 'OpenAI/httpx imports', 'work image preview'],
         'api_calls': 0,
     }, indent=2), encoding='utf-8')
 

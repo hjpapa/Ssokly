@@ -18,21 +18,21 @@ def choose_transfer(parent, *, kind: str, text: str = "", image=None,
                     path: Optional[Union[Path, str]] = None,
                     previous: Optional[TransferPolicy] = None,
                     image_previous: Optional[TransferPolicy] = None,
-                    title: str = "AI 전송 대상 확인") -> Optional[TransferSnapshot]:
+                    title: str = "AI 전송 대상 확인", action=None) -> Optional[TransferSnapshot]:
     """Return only an explicitly approved immutable copy, or None on cancel.
 
     For files without local text extraction, masking uses user-provided text or
     a selected page image; it never pretends that the original file was masked.
     """
     dialog = TransferDialog(parent, kind=kind, text=text, image=image, path=path,
-                            previous=previous, image_previous=image_previous, title=title)
+                            previous=previous, image_previous=image_previous, title=title, action=action)
     parent.wait_window(dialog.window)
     return dialog.result
 
 
 class TransferDialog:
     def __init__(self, parent, *, kind: str, text: str = "", image=None,
-                 path=None, previous=None, image_previous=None, title="AI 전송 대상 확인"):
+                 path=None, previous=None, image_previous=None, title="AI 전송 대상 확인", action=None):
         # A drawing-only hint must not accidentally remove even its own scope
         # if a caller omitted previous. A supplied combined restriction wins.
         if image_previous is not None and image_previous.redacted and (previous is None or not previous.redacted):
@@ -75,7 +75,7 @@ class TransferDialog:
         ttk.Label(body, text=caution, wraplength=810, foreground="#7a5426").pack(anchor="w", pady=(0, 8))
         controls = ttk.Frame(body)
         controls.pack(fill="x", pady=(0, 8))
-        action = '정리' if kind == 'text' else '읽기'
+        action = action or ('정리' if kind == 'text' else '읽기')
         self.direct_button = ttk.Button(controls, text=f"확인 후 그대로 {action}" if candidates else f"AI로 {action}", command=self.accept_direct)
         self.direct_button.pack(side="left")
         if previous is not None and previous.redacted:

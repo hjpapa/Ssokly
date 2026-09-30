@@ -303,6 +303,9 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         ai_footer = ttk.Frame(self.ai_panel)
         ai_footer.pack(side='bottom', fill='x', pady=5)
         ttk.Button(ai_footer, text='결과 복사', command=lambda: self.copy_text(self.output_editor.get('1.0', 'end-1c'))).pack(side='left')
+        from ui.work_image import open_work_image
+        self.work_image_button = ttk.Button(ai_footer, text='이미지로 만들기', command=lambda: open_work_image(self))
+        self.work_image_button.pack(side='left', padx=5)
         ttk.Button(ai_footer, text='이전 결과', command=self.show_output_history).pack(side='right')
         self.output_editor.pack(fill='both', expand=True)
 

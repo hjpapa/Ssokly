@@ -4,6 +4,51 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## 운영 배포·출시 검증 — 2026-09-30 / 07
+
+운영 배포 `dpl_8suWZbe9MEw7szZBGVRj1EKivDzp`, 기존 `https://ssokly-ai-relay.vercel.app` 별칭, READY 확인. `api/ai`, `api/image`, `api/upload`, `api/cleanup` 모두 icn1. 키·로그인 정책·횟수/본문 제한 변경 없음. 이미지 함수 300초 설정 포함.
+
+| 검증 | 이번 실행 결과 |
+| --- | --- |
+| backend `node --test test/*.test.js` | 18개 통과 |
+| `tools/verify_capture_desk.py --all` | 최종 559개 통과, 166.825초, 오류·실패·건너뜀·통신 시도 0 |
+| `tools/verify_v2_release.py` | 159개 통과, 3.313초, 통신 시도 0 |
+| `tools/verify_reopen_flow.py` | passed true, 캡처 3개·프로세스 2개 |
+| `tools/verify_release_scenarios.py` | 21개 지원 형식을 UI로 가져오기 성공, 공문 10건×3모드 모의 정리·수정본 저장·원문 유지·라벨/메모·검색·휴지통/복원·새 앱 재열기 통과 |
+| `tools/evaluate_desk_usability.py` | 100~300% 8배율×4크기×6상태=192조합 기준 위반 0 |
+| 새 이미지 창 배율 | 초기 175% 이상 미리보기 부족, 225% 이상 복사 버튼 잘림 발견. 수정 후 8배율 모두 통과, 미리보기 높이 301/256/221/221/221/221/221/221px |
+| `tests.test_work_image` | 14개 통과, 6.948초. 8배율 회귀 추가 |
+| 실제 Windows 이미지 복사 | CF_DIB 전송 후 Pillow로 읽은 크기 및 RGB 전체 픽셀 동일 |
+| `tools/preview_capture_desk.py --geometry 720x680` | 합성 wrapper로 앱과 새 이미지 미리보기 시각 확인, 추가 API 0회 |
+
+운영 API는 가상 천문 관측 안내 1건으로 **총 유료 호출 5회**(로컬 키 사용 0, 자동 재시도 0). OCR **3.391초**, 요약 **2.609초**, 일정 **3.797초**, 학부모 안내문 **3.906초**, 요약→Flare 이미지 **15.297초**. 모두 완료. OCR은 원문 문장을 보존했고 요약/일정의 날짜·신청 주체·희망 5학년·무료·미회신 조건을 확인했다. 안내문은 학부모 대상 표현으로 변경하며 학생 미참여 시 미회신 조건을 유지했다. 생성 PNG의 요약 4문장 전체와 날짜/조건이 시각 대조에서 일치했다. 보고서·합성 원문/결과는 `.local-results/work-image/production`에 보관한다. 이전 /06 직접 호출 2회와 구분한다.
+
+지원 형식: BMP/CSV/DOCX/HTML/HWPX/JPEG/JPG/JSON/MD/ODP/ODS/ODT/PDF/PNG/PPTX/RTF/TSV/TXT/WebP/XLSX/XML. 공문 시나리오는 필수 제출, 희망자·미회신, 없음 회신, 표와 날짜 연결, 주체 구분 등 기존 10종을 사용한다. 모델 응답은 이 넓은 기능 검사에서 모의 처리했으므로 실제 모델 30회 검증으로 해석하지 않는다.
+
+미검증: 외부 앱별 실제 붙여넣기, 물리 다중 모니터, Python 없는 별도 PC, 모든 실물 공문의 AI 정확도. 실행파일 최종 결과는 완료 후 아래에 추가한다.
+
+## 업무 이미지 — 2026-09-30 / 06
+
+- 실제 호출: 승인된 기존 로컬 키로 **GPT-Image-2.5 Flare 2회**, 자동 재시도 0회. high·1024×1536 PNG. Vercel 경유 전의 앱 직접 호출 경로다. 합성 자료만 사용했고 키·사용자 문서·DB는 기록하지 않았다.
+- 입력은 가상 업무 결과 각 7줄(제목 포함). 1번은 희망 학생·신청 기한·행사 연도/오전 시간·0원·제출 생략·장소 미정·붙임 미제공. 2번은 담당 교사·제출처/기한·없음 회신·재신청 불필요·우천 조건·연도 없는 발표 예정일·비용/담당자 이름 미기재다.
+
+| 직접 호출 | 전체 시간 | PNG 크기 | 이미지 직접 대조 |
+| --- | --- | --- | --- |
+| 합성 1 | 15.984초 | 1,269,547 bytes | 7줄 내용 모두 표시. 한글, 10월 2일 오후 3시까지, 2026년 10월 8일 오전 9시 30분, 희망자·제출 생략·미정·미제공 보존 |
+| 합성 2 | 15.641초 | 1,246,467 bytes | 7줄 내용 모두 표시. 2026년 11월 6일 오후 5시까지, 없음 회신, 재신청 불필요, 우천 조건, 11월 10일 예정과 미기재 정보 보존 |
+
+육안 대조에서 원문 없는 연도·업무 추가나 조건 반전은 발견하지 않았다. 제목·장식·줄바꿈·번호 배치는 모델이 결정했다. 자동 OCR 문자 점수나 일반 문서 정확도 비율은 측정하지 않았다. 2건의 짧은 합성 입력 결과이며 긴 문서·작은 글씨·복잡한 표·반복 생성의 품질 보장은 아니다. 산출물은 로컬 `.local-results/work-image/case-1.png`, `case-2.png`, 입력 `.txt`, `timing.json`에 보관한다.
+
+- 새 기능 집중 `python -m unittest tests.test_work_image`: **13개 통과**. 정확한 현재 결과/승인 사본 사용, 취소 시 무호출, 재시도/우회 없음, 직접·중계 설정, PNG 유효성, 가림 유지, 실패 시 이전 결과 유지, 저장/복사 연결, after 정리, 최소 창 검사. 실제 사용자 클립보드 붙여넣기는 수행하지 않았다.
+- 초기 새 기능+레이아웃: **25개 통과**. 첫 sandbox 실행의 Tk init.tcl 접근 오류 5건은 일반 데스크톱 권한 환경에서 재실행해 해소됨.
+- `python tools/verify_capture_desk.py --all`: 최종 **558개 통과**, 160.533초, 오류·실패·건너뜀·통신 시도 0. 추가 테스트 3개 전 실행도 555개·148.590초 통과.
+- `python tools/verify_v2_release.py`: **159개 통과**, 3.199초, 통신 시도 0.
+- `python tools/verify_reopen_flow.py`: **passed true**, 캡처 3개·프로세스 2개.
+- backend `node --test test/*.test.js`: **18개 통과**, 실제 API 호출 0. 새 고정 요청·옵션 주입 거부·PNG 반환·오류 응답 은닉 검사 포함.
+- `python tools/export_relay_prompts.py` 재생성 및 앱/서버 이미지 지시문 일치 테스트 통과.
+- `tools/preview_capture_desk.py --geometry 720x680`를 합성 자료로 실행해 버튼과 실제 생성 PNG 미리보기를 화면으로 확인. `.local-results/work-image/desk-720.png`, `window.png`. 캡처용 wrapper만 사용했고 추가 API 호출은 없다.
+- 운영 `/api/image` 배포 승인 대기. EXE 재빌드·실제 다중 모니터·실제 외부 앱 이미지 붙여넣기 미검증. 기존 배포본/설치본에는 이 기능이 포함되지 않았다.
+
 ## 폴더형 덮어쓰기 확인 — 2026-09-30 / 05
 
 기존 앱 종료 확인 후 검증된 `.local-results/ui-build-stage/Ssokly`를 `dist/Ssokly`로 덮어씀. 파일 집합 및 **1,136개 파일 SHA256 모두 일치**, 추가 파일 없음. 실제 목적지 EXE 자가검사 종료 0·passed true·frozen true. Python 경로 제거 및 다른 작업 폴더에서 Tk·PDFium 렌더·DOCX/PPTX/XLSX/RTF·임시 캡처 저장/재열기·표 검증 통과. API 0회, 사용자 저장소 미사용. 보고서 `.local-results/portable-overwrite-check.json`. 전체 회귀와 운영 API는 재실행하지 않음. 설치형은 /04 산출물 유지.
