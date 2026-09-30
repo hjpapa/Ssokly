@@ -323,7 +323,7 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         finally:
             self._loading = False
 
-    def open_document(self, document_id, *, _discard_edits=False):
+    def open_document(self, document_id, *, _discard_edits=False, preserve_library=False):
         if not _discard_edits and not self.flush_edits():
             if self.document and self.document_tree.exists(self.document['id']):
                 self.document_tree.selection_set(self.document['id'])
@@ -363,7 +363,7 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
             self.status.set('휴지통 자료 · 보관함의 선택 문서 복원 버튼으로 복원한 뒤 편집하세요.')
         self.save_state.set('읽기 전용' if locked else '저장됨')
         self._show_recovery_warning()
-        if self._is_compact():
+        if self._is_compact() and not preserve_library:
             self._compact_library = False
             self._apply_layout()
         return True

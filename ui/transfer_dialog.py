@@ -45,7 +45,6 @@ class TransferDialog:
         self.rectangles, self.excluded = [], []
         self.masking = False
         self._start = None
-        self._serial = 0
         self.window = tk.Toplevel(parent)
         self.window.title(title)
         self.window.geometry("860x700")
@@ -88,9 +87,11 @@ class TransferDialog:
         self.preview = ttk.Frame(body)
         self.preview.pack(fill="both", expand=True)
         self.tools = ttk.Frame(body)
-        self.tools.pack(fill="x", pady=(8, 0))
+        self.tools.pack(fill="x", pady=(8, 0), before=self.preview)
         self.finish_button = ttk.Button(body, text=f"가린 내용으로 {action}", command=self.accept_redacted)
-        self.finish_button.pack(anchor="e", pady=(8, 0))
+        # Allocate the action before the expanding Text/Canvas; otherwise its
+        # requested height can push the only send button below the window.
+        self.finish_button.pack(side="bottom", anchor="e", pady=(8, 0), before=self.preview)
         self.finish_button.state(["disabled"])
         if kind == "text":
             self._show_text(text, editable=False)
@@ -125,7 +126,7 @@ class TransferDialog:
 
     def _show_text(self, text, *, editable):
         self._clear_preview()
-        self.editor = tk.Text(self.preview, wrap="word", undo=True, font=("맑은 고딕", 10))
+        self.editor = tk.Text(self.preview, wrap="word", undo=True, exportselection=False, font=("맑은 고딕", 10))
         scrollbar = ttk.Scrollbar(self.preview, orient="vertical", command=self.editor.yview)
         self.editor.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
@@ -133,8 +134,12 @@ class TransferDialog:
         self.editor.insert("1.0", text)
         self.editor.configure(state="normal" if editable else "disabled")
         if editable:
-            ttk.Button(self.tools, text="선택한 텍스트 가리기", command=self.mask_selection).pack(side="left")
-            ttk.Label(self.tools, text="가릴 내용을 선택하거나 전송용 사본을 직접 수정하세요.").pack(side="left", padx=8)
+            self.tools.pack_configure(before=self.preview)
+            self.mask_selection_button = ttk.Button(self.tools, text="선택한 텍스트 가리기", command=self.mask_selection)
+            self.mask_selection_button.pack(side="left")
+            ttk.Label(self.tools, text="① 아래 글자 드래그 → ② 이 버튼으로 가리기", wraplength=350).pack(side="left", padx=8)
+            self.editor.edit_modified(False)
+            self.editor.bind('<<Modified>>', self._text_mask_changed)
             if self.kind == "file":
                 ttk.Button(self.tools, text="페이지 이미지로 전환", command=self.select_page_image).pack(side="right")
 
@@ -147,6 +152,7 @@ class TransferDialog:
         self.canvas.bind("<B1-Motion>", self.drag_rectangle)
         self.canvas.bind("<ButtonRelease-1>", self.end_rectangle)
         if self.masking:
+            self.finish_button.state(['!disabled'])
             ttk.Button(self.tools, text="가림 초기화", command=self.reset_rectangles).pack(side="left")
             ttk.Label(self.tools, text="마우스로 사각형을 그리세요. 검은 영역은 실제 전송 픽셀에 합성됩니다.").pack(side="left", padx=8)
         self._draw_image()
@@ -167,6 +173,9 @@ class TransferDialog:
         self.canvas.create_image(*self.offset, anchor="nw", image=self.photo)
 
     def start_masking(self):
+        if self.masking:
+            return
+        selection = self.editor.tag_ranges('sel') if self.kind == 'text' else ()
         self.masking = True
         self.direct_button.state(["disabled"])
         self.mask_button.state(["disabled"])
@@ -174,10 +183,24 @@ class TransferDialog:
         self.note.set("미리 본 전송용 사본만 보냅니다. 원본 파일·숨은 텍스트는 함께 보내지 않습니다.")
         if self.kind in {"text", "file"}:
             self._show_text(self.original_text if self.kind == "text" else "", editable=True)
+            if self.kind == 'text':
+                self.note.set(f'가릴 글자를 선택하고 아래의 ‘선택한 텍스트 가리기’를 누른 뒤 ‘{self.finish_button.cget("text")}’를 누르세요. 원문은 바뀌지 않습니다.')
             if self.kind == "file":
                 self.note.set("필요한 텍스트만 붙여 넣어 가려 주세요. 또는 페이지 이미지를 선택하세요. 원본 파일은 전송하지 않습니다.")
+            self._text_mask_changed()
+            self.editor.focus_set()
+            if selection:
+                self.editor.tag_add('sel', *selection)
+                self.editor.see(selection[0])
+                self.mask_selection()
         else:
             self._show_image()
+
+    def _text_mask_changed(self, _event=None):
+        self.editor.edit_modified(False)
+        text = self.editor.get('1.0', 'end-1c')
+        ready = bool(text.strip()) and (self.kind != 'text' or text != self.original_text)
+        self.finish_button.state(['!disabled'] if ready else ['disabled'])
 
     def mask_selection(self):
         try:
@@ -188,10 +211,12 @@ class TransferDialog:
             self.note.set("가릴 텍스트를 먼저 선택해 주세요.")
             return
         self.excluded.append(secret)
-        self._serial += 1
         self.editor.delete(start, end)
-        self.editor.insert(start, f"[가림{self._serial}]")
+        # A numbered marker can reintroduce the very digit the user removed.
+        self.editor.insert(start, "[가림]")
         self.text_draft.record_selection(before, self.editor.get("1.0", "end-1c"), secret)
+        self._text_mask_changed()
+        self.note.set(f'선택한 부분을 [가림]으로 바꿨습니다. 사본을 확인한 뒤 ‘{self.finish_button.cget("text")}’를 누르세요.')
 
     def select_page_image(self):
         path = filedialog.askopenfilename(parent=self.window, title="가릴 페이지 이미지 선택",
@@ -297,6 +322,9 @@ class TransferDialog:
                 selected = replace(selected, policy=replace(selected.policy,
                     redacted=True, protected=tuple(sorted(set(selected.policy.protected) | set(self.previous.protected)))))
             self.result = selected
+        except ScopeExpansionRequired:
+            messagebox.showerror("가림 확인", "가린 것과 같은 글자나 숫자가 전송용 사본에 남아 있습니다. 반복된 내용도 가린 뒤 다시 확인해 주세요.", parent=self.window)
+            return
         except ValueError as exc:
             messagebox.showerror("가림 확인", str(exc), parent=self.window)
             return

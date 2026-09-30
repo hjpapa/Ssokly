@@ -154,7 +154,7 @@ class LibraryMixin:
             if current in documents:
                 self._clear_document()
             elif current:
-                self.open_document(current)
+                self.open_document(current, preserve_library=True)
             self.refresh_library()
             self.status.set('영구 삭제했습니다.' if not result['pending_files'] else
                             '목록에서 삭제했습니다. 사용 중인 일부 이미지 파일의 정리가 남아 있습니다.')
@@ -202,7 +202,7 @@ class LibraryMixin:
 
     def _document_context_menu(self, event):
         selected = self.document_tree.identify_row(event.y)
-        if not selected or not self.open_document(selected):
+        if not selected or not self.open_document(selected, preserve_library=True):
             return 'break'
         self.document_tree.selection_set(selected)
         menu = tk.Menu(self, tearoff=False)
