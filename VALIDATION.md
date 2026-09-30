@@ -1,8 +1,32 @@
 # Ssokly 사용 검증 기록
 
-마지막 기능 검증일: 2026-09-29. 문서 정비일: 2026-09-29.
+마지막 기능 검증일: 2026-09-30. 문서 정비일: 2026-09-30.
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
+
+## 운영 배포·실제 품질·설치본 — 2026-09-30 / 02
+
+운영 배포 `dpl_FBTbfscTezBz61bX8fkVPiGzETjA` READY, 기존 운영 별칭 연결. 첫 Not authorized 이후 whoami 성공·배포 재시도 성공. 같은 합성 공문 02/06의 일정 분석 총 **4회 유료 완료**(직접 2, 중계 2). 승인된 기존 로컬 키만 직접 검증에 사용, 운영 중계 검증은 로컬 키 로드 금지. 이번 OCR/요약 추가 호출 없음.
+
+| 검사 | 결과 |
+| --- | --- |
+| `tools/evaluate_task_quality.py --live --direct` | 02 4.833초, 06 2.967초, 둘 다 완료 |
+| `tools/evaluate_task_quality.py --live` | 운영 02 4.960초, 06 2.939초, 둘 다 완료 |
+| `python tools/verify_capture_desk.py --all` | 542개 통과, 162.045초, 실패·오류·건너뜀·통신 시도 0 |
+| `python tools/verify_v2_release.py` | 159개 통과, 3.232초, 통신 시도 0 |
+| `python tools/verify_reopen_flow.py` | passed true, 캡처 3개·프로세스 2개 |
+| backend `node --test test/*.test.js` | 16개 통과 |
+| `python tools/build_windows.py` | PyInstaller 6.22.3, hooks 2026.8, Python 3.9.7 x64, 폴더형 EXE 성공 |
+| `ISCC.exe packaging/Ssokly.iss` | Inno Setup 6.7.3, 한국어·사용자별 설치 EXE 성공, 24,930,823바이트 |
+| 폴더형/최종 설치형 `--self-test-report` | frozen true·passed true, API 0회. Tk, PDFium 실제 렌더, DOCX/PPTX/XLSX/RTF, 임시 캡처 저장·재열기·파이프 표·SDK import |
+| 최종 설치→실행→제거 | 각 종료 코드 0, 제거 후 시험 경로 앱 없음 |
+| pip check / compileall / 기본 품질 도구 | 의존성 오류 없음, 새 Python 컴파일 성공, 기본 실행 무호출 |
+
+실제 결과 대조: 학생→담임 신청을 취합/전달 학교 업무로 바꾸는 오류는 이번 4개 응답에서 없었음. 선택/미회신 조건, 붙임 미제공, 비용/담당자 미기재 보존. **중계 02 신청 기한에 원문에 없는 2026년 추가**, 직접/중계 02에서 생략하도록 지시한 빈 학교 업무 구역 출력. 주체 오류 보완과 전체 사실 정확도를 구분한다. 두 사례·각 경로 1회씩으로 일반 정확도 보장 불가. 토큰/비용은 이번 도구에서 미집계.
+
+실행 시험은 Python을 PATH에서 제거하고 PYTHONHOME/PYTHONPATH를 비우며 다른 작업 디렉터리에서 수행. 실제 Python 미설치 별도 PC를 사용한 것은 아님. 배포용 EXE의 실제 API 전송, 사용자 저장소 마이그레이션, 업데이트 설치, 코드 서명, SmartScreen 평판, 모든 OS/배율 조합은 미검증. 기본 앱 코드 변경 없이 별도 엔트리로 빌드. 사용자 자료와 키 미포함, 배포 폴더에서 .env/DB/로그 파일 없음 확인. 소스 ZIP 생성 없음.
+
+설치 EXE SHA256: `82058B38FE07B2216A4EC07F762B3902E5D83B53B53292E5FF83A520F48E2966`. 보고서는 ignored `.local-results/{task-quality-direct-20260930.json,task-quality-relay-20260930.json,frozen-check.json,installed-final.json}`. 빌드 로그의 numpy/pandas/websockets 등 선택 의존성 경고는 기본 경로 시험과 구분하며 지원을 보장하지 않음.
 
 ## 업무 주체·파이프 표 보완 — 2026-09-29 / 12
 

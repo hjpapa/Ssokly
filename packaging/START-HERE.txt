@@ -1,0 +1,18 @@
+Ssokly 0.1.0 - Windows x64
+
+Ssokly.exe를 실행하세요. Python 설치나 개인 API 키 입력은 필요하지 않습니다.
+설치 없이 사용할 때는 _internal과 ai-server.json을 포함한 폴더 전체를 보관하세요.
+OCR·AI 정리에는 인터넷 연결이 필요합니다.
+앱을 제거해도 캡처와 문서 데이터는 삭제하지 않습니다.
+AI 결과의 담당·날짜·조건은 원문과 대조하세요.
+
+Run Ssokly.exe. Python and an OpenAI API key are not required.
+Keep the entire folder together, including _internal and ai-server.json.
+AI reading and organization require internet access to the configured relay.
+
+User data: %LOCALAPPDATA%\Ssokly
+Captured images: Desktop\ssokly by default, or the selected capture folder.
+Back up BOTH locations with the app closed. Uninstall does not delete them.
+
+AI output can be inaccurate. Compare dates, actors and conditions with the source.
+This build is unsigned. Use only a trusted distribution source.

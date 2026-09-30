@@ -52,6 +52,16 @@ Windows의 AppData 경로 전환으로 정상 캡처의 등록·조회·복구�
 
 ## 설치와 실행
 
+### Windows 실행 파일 · 0.1.0
+
+Python이 없는 Windows 10/11 x64 PC에서는 `dist/Ssokly-Setup-0.1.0-x64.exe`로 설치합니다. 관리자 권한 없이 사용자별 `%LOCALAPPDATA%\Programs\Ssokly`에 설치하고 시작 메뉴에서 실행합니다. 바탕화면 바로가기는 설치 중 선택합니다. 설치하지 않으려면 `dist/Ssokly` 폴더 전체를 복사한 뒤 `Ssokly.exe`를 실행하세요. `_internal`과 `ai-server.json`을 함께 유지해야 합니다. 개인 OpenAI API 키는 필요 없으며 OCR·AI 정리에는 인터넷과 운영 중계 서버가 필요합니다.
+
+제거는 Windows 설치된 앱에서 합니다. 제거해도 `%LOCALAPPDATA%\Ssokly`의 문서 DB와 선택한 캡처 폴더는 남습니다. 이 빌드는 코드 서명이 없어서 Windows 보안 경고가 나타날 수 있습니다. 다른 PC에서의 최종 실행 확인은 별도이며, 현재 PC에서 Python 경로 없이 EXE와 설치본의 기본 기능을 검증했습니다.
+
+개발자 빌드: `python -m pip install -r requirements-build.txt` → `python tools/build_windows.py` → Inno Setup 6.7.3의 `ISCC.exe packaging/Ssokly.iss`. 출력은 `dist`에 생성합니다. 프로젝트 전체나 `.env`·DB는 복사하지 않고 의존 라이브러리·라이선스·공개 서버 주소만 포함합니다. `Ssokly.exe --self-test-report <결과.json>`은 임시 자료로 화면·PDF/Office·저장/재열기를 확인하며 API를 호출하지 않습니다.
+
+### 소스 실행
+
 Windows와 tkinter가 포함된 Python이 필요합니다. 기존 검증 환경은 Python 3.12.10이며, Python 3.9.7 환경의 시작·캡처 파일 조회·표 글꼴 호환 오류도 보완했습니다. 환경별 검증 범위는 [VALIDATION.md](VALIDATION.md)를 참고하세요. 저장소 루트에서 PowerShell로 실행합니다.
 
 ```powershell
