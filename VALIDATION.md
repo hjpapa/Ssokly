@@ -4,6 +4,17 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## 커밋·푸시 및 dist 산출물 확인 — 2026-10-03 /18
+
+앱 코드는 /17 검증 이후 바뀌지 않았다. 기능 커밋 `84c8dd4`를 origin/main에 푸시하고 원격 SHA 일치를 확인했다. 기존 전체 591개·실제 클립보드 6항목·화면 192조합·EXE 자가검사 결과는 그대로 재사용하며 이번에 다시 실행한 결과로 기록하지 않는다.
+
+- 실행 폴더 1,136파일과 설치파일을 staging의 모든 SHA256과 대조하여 일치 확인. frozen 실행 모듈 44개의 바이트코드를 현재 소스와 직접 비교하여 일치, 변경된 실행 소스 8개 포함.
+- `Ssokly-Portable-0.1.0-x64.zip`: 32,732,277바이트. 전체 폴더를 담은 1,136파일·184폴더, 1,320항목의 CRC와 모든 파일 해시 일치. SHA256 `d0233752ab1e3455579b6fc999ebffff1ab0ca8da3d24d07a0989be6249ca2d6`.
+- `tools/build_submission.py`로 최신 추적 소스 62파일의 제출 ZIP 갱신. 새 이미지 클립보드 모듈 및 현재 UI·README·STATUS·VALIDATION과 ZIP 내 내용 일치, ZIP 무결성 확인. 키·DB·보고서 경로 제외.
+- 배포 manifest에 게시 커밋·산출물 해시 기록, `SHA256SUMS.txt` 생성. Git 스테이징 14파일의 범위·문법·가능한 API 키 패턴 검사 및 공백 확인. 연구보고서 파일은 게시에 포함하지 않음.
+
+기록: `.local-results/capture-copy-portable-audit-20261003.json`, `capture-copy-postcommit-release-20261003.json`. EXE/Setup 미서명, 다른 PC 설치/제거와 실제 문서 붙여넣기는 추가 검사하지 않았다. 유료 API 호출·운영 서버·사용자 자료 변경 없음. README·STATUS·본 기록 갱신.
+
 ## 캡처 이미지 복사 — 2026-10-03 /17
 
 | 검사 | 실제 결과 |
