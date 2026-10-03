@@ -66,6 +66,7 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         self.thumbnails = ThumbnailCache(self)
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.bind('<Control-s>', lambda _event: self._save_shortcut())
+        self.bind('<F1>', lambda _event: self.show_help())
         self.bind('<Configure>', self._on_resize)
         self.refresh_library()
         self._poll_id = self.after(80, self._poll_results)
@@ -86,8 +87,12 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         self.add_button = ttk.Button(self._header_primary, text='+ 페이지', width=-7, command=self.capture_page, style='Desk.TButton')
         self.add_button.pack(side='left', padx=3)
         ttk.Button(self._header_primary, text='파일 열기', width=-7, command=self.open_file, style='Desk.TButton').pack(side='left', padx=3)
-        self.library_button = ttk.Button(self._header_secondary, text='보관함', width=-6, command=self.toggle_library)
-        self.library_button.pack(side='right')
+        library_actions = ttk.Frame(self._header_secondary)
+        library_actions.pack(side='right')
+        self.library_button = ttk.Button(library_actions, text='보관함', width=-6, command=self.toggle_library)
+        self.library_button.pack(fill='x')
+        self.help_button = ttk.Button(library_actions, text='? 사용 설명서', command=self.show_help)
+        self.help_button.pack(fill='x', pady=(3, 0))
         menu = tk.Menu(self, tearoff=False)
         menu.add_command(label='새 텍스트 문서', command=self.new_text_document)
         menu.add_command(label='캡처 관리 · 전체 이미지', command=self.show_capture_manager)
@@ -170,9 +175,9 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
                         command=self.refresh_library).pack(anchor='w')
         self.document_trash_button = ttk.Button(self.library_panel, text='선택 문서 삭제 / 복원', command=self.toggle_trash, state='disabled')
         self.document_trash_button.pack(fill='x')
-        trash_actions = ttk.Menubutton(self.library_panel, text='휴지통 관리 · 복원 / 영구 삭제')
+        trash_actions = ttk.Menubutton(self.library_panel, text='휴지통 관리')
         trash_menu = tk.Menu(trash_actions, tearoff=False)
-        trash_menu.add_command(label='삭제한 페이지 · 복원 / 영구 삭제', command=self.show_deleted_pages)
+        trash_menu.add_command(label='페이지 휴지통 열기…', command=self.show_deleted_pages)
         trash_menu.add_command(label='선택 휴지통 문서 영구 삭제', command=self.purge_current_document)
         trash_menu.add_separator()
         trash_menu.add_command(label='휴지통 비우기', command=self.empty_trash)
@@ -249,7 +254,7 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         page_actions.pack(fill='x', before=page_bar)
         self.page_delete_button = ttk.Button(page_actions, text='이 페이지 삭제', command=self.delete_current_page, state='disabled')
         self.page_delete_button.pack(side='left')
-        ttk.Button(page_actions, text='삭제한 페이지 복원', command=self.show_deleted_pages).pack(side='left', padx=3)
+        ttk.Button(page_actions, text='페이지 휴지통', command=self.show_deleted_pages).pack(side='left', padx=3)
 
         self.editor_tabs = ttk.Notebook(self.editor_panel)
         self.editor_tabs.pack(fill='both', expand=True, padx=(7, 0))
@@ -582,6 +587,10 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         except Exception as error:
             log_failure('capture_desk.move_page', error)
             self.status.set('페이지 순서를 저장하지 못했습니다. 원래 순서는 유지합니다.')
+
+    def show_help(self):
+        from ui.user_manual import show_user_manual
+        return show_user_manual(self)
 
     def show_capture_location(self):
         dialog = tk.Toplevel(self)

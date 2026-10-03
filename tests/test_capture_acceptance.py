@@ -188,7 +188,8 @@ class CaptureAcceptanceTests(unittest.TestCase):
         self.app.geometry('720x680')
         self.app.editor_tabs.select(self.app.text_panel)
         self.app.update()
-        self.assertEqual((self.app.winfo_width(), self.app.winfo_height()), (720, 680))
+        self.assertEqual((self.app.winfo_width(), self.app.winfo_height()),
+                         (max(720, self.app.minsize()[0]), max(680, self.app.minsize()[1])))
         self.assertTrue(self.app.image_view.canvas.winfo_ismapped())
 
         def inside(widget):
@@ -202,7 +203,7 @@ class CaptureAcceptanceTests(unittest.TestCase):
             self.assertLessEqual(x + widget.winfo_width(), self.app.winfo_width())
             self.assertLessEqual(y + widget.winfo_height(), self.app.winfo_height())
 
-        for widget in (self.app.capture_button, self.app.add_button, self.app.title_entry,
+        for widget in (self.app.capture_button, self.app.add_button, self.app.help_button, self.app.title_entry,
                        self.app.view_button, self.app.read_button, self.app.source_editor,
                        *self.buttons(self.app.text_panel)):
             inside(widget)

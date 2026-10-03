@@ -186,7 +186,7 @@ class LibraryMixin:
         allowed = self.page and self.document and not self.document.get('readonly') and not self.document.get('trashed')
         menu.add_command(label='이 페이지 삭제 · 휴지통으로', command=self.delete_current_page,
                          state='normal' if allowed else 'disabled')
-        menu.add_command(label='삭제한 페이지 복원…', command=self.show_deleted_pages)
+        menu.add_command(label='페이지 휴지통 열기…', command=self.show_deleted_pages)
         menu.add_command(label='쪽을 새 문서로 분리…', command=self.show_split_dialog,
                          state='normal' if allowed and len(self.page_records) > 1 else 'disabled')
         menu.add_separator()
@@ -221,7 +221,7 @@ class LibraryMixin:
         if not self.flush_edits():
             return False
         index = next(i for i, page in enumerate(self.page_records) if page['id'] == self.page['id'])
-        if not messagebox.askyesno('페이지 삭제', f'{index + 1}쪽을 휴지통으로 옮길까요?\n원본과 수정 텍스트는 보존되며 삭제한 페이지에서 복원할 수 있습니다.', parent=self):
+        if not messagebox.askyesno('페이지 삭제', f'{index + 1}쪽을 휴지통으로 옮길까요?\n원본과 수정 텍스트는 보존되며 페이지 휴지통에서 복원할 수 있습니다.', parent=self):
             return False
         try:
             page_id, document_id = self.page['id'], self.document['id']
@@ -236,7 +236,7 @@ class LibraryMixin:
             if self.page_records:
                 self._load_page(min(index, len(self.page_records) - 1))
             self.refresh_library()
-            self.status.set('페이지를 삭제했습니다. 삭제한 페이지 · 복원에서 되돌릴 수 있습니다.')
+            self.status.set('페이지를 삭제했습니다. 페이지 휴지통에서 되돌릴 수 있습니다.')
             return True
         except Exception as error:
             log_failure('desk_library.delete_current_page', error)
@@ -247,10 +247,10 @@ class LibraryMixin:
         if not self.flush_edits():
             return
         dialog = tk.Toplevel(self)
-        dialog.title('페이지 휴지통 · 복원 / 영구 삭제')
+        dialog.title('페이지 휴지통')
         dialog.geometry('640x420')
         dialog.transient(self)
-        ttk.Label(dialog, text='마지막 페이지를 삭제하면 문서도 휴지통으로 이동합니다. 직접 삭제한 문서는 문서를 먼저 복원하세요.',
+        ttk.Label(dialog, text='삭제된 페이지를 선택한 뒤 복원하거나 영구 삭제하세요. 영구 삭제한 페이지는 복원할 수 없습니다.\n마지막 페이지 삭제로 문서도 휴지통에 갈 수 있습니다. 직접 삭제한 문서는 문서를 먼저 복원하세요.',
                   wraplength=590, padding=10).pack(fill='x')
         listing = ttk.Treeview(dialog, columns=('document', 'page'), show='headings', selectmode='browse')
         listing.heading('document', text='문서')

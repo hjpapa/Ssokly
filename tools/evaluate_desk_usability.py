@@ -63,7 +63,9 @@ def evaluate(percentages=(100, 125, 150, 175, 200, 225, 250, 300)):
                         app._apply_layout()
                         start = time.perf_counter()
                         app.update()
-                        widgets = {'capture': app.capture_button, 'library_button': app.library_button}
+                        widgets = {'capture': app.capture_button, 'library_button': app.library_button, 'help': app.help_button}
+                        if app.library_panel.winfo_ismapped():
+                            widgets.update(search=app.search_button, search_entry=app.search_entry)
                         if state == 'library':
                             widgets['document_list'] = app.document_tree
                         else:

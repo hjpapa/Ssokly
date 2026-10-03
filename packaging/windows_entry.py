@@ -1,8 +1,28 @@
 """Frozen desktop entry; optional isolated offline diagnostics for packaging."""
 import json
+import os
+from contextlib import contextmanager
 from pathlib import Path
 import sys
 import tempfile
+
+
+@contextmanager
+def isolated_user_paths(root):
+    """Exercise normal startup without touching the user's library or desktop."""
+    from services import capture_location
+    previous_local = os.environ.get('LOCALAPPDATA')
+    previous_desktop = capture_location.desktop_directory
+    try:
+        os.environ['LOCALAPPDATA'] = str(root / 'localappdata')
+        capture_location.desktop_directory = lambda: root / 'desktop'
+        yield
+    finally:
+        capture_location.desktop_directory = previous_desktop
+        if previous_local is None:
+            os.environ.pop('LOCALAPPDATA', None)
+        else:
+            os.environ['LOCALAPPDATA'] = previous_local
 
 
 def self_test(report_path):
@@ -19,6 +39,7 @@ def self_test(report_path):
     from main import _enable_windows_dpi_awareness
     from ui.capture_desk import CaptureDeskApp
     from services.document_library import DocumentLibrary
+    from services.capture_store import CaptureStore
     from services.ai_relay import server_url
     from services.source_review import source_table_blocks
     from services.work_image import image_request, validate_png
@@ -45,9 +66,25 @@ def self_test(report_path):
         workbook.close()
         openpyxl.load_workbook(root / 'sample.xlsx').close()
         assert rtf_to_text(r'{\rtf1 synthetic}') == 'synthetic'
-        app = CaptureDeskApp(library=DocumentLibrary(root / 'store'))
+        with isolated_user_paths(root):
+            app = CaptureDeskApp()
         try:
             app.withdraw()
+            initial_documents = len(app.library.list_documents())
+            initial_trash_documents = len(app.library.list_documents(trashed=True))
+            initial_captures = len(app.library.capture_store.list_recent())
+            initial_trash_captures = len(app.library.capture_store.search(trashed=True))
+            assert (initial_documents, initial_trash_documents,
+                    initial_captures, initial_trash_captures) == (0, 0, 0, 0)
+            assert app.document is None and app.page is None
+            assert not app.document_tree.get_children()
+            manual = app.show_help()
+            app.update_idletasks()
+            assert 'Ssokly' in manual.text.get('1.0', 'end')
+            assert app.show_help() is manual
+            manual.close()
+            assert app.library.app_data_dir == (root / 'localappdata' / 'Ssokly').resolve()
+            assert app.library.capture_store.directory == (root / 'desktop' / 'ssokly').resolve()
             app.accept_capture(Image.new('RGB', (100, 100), 'white'), auto_read=False)
             app.update_idletasks()
             assert len(app.library.list_documents()) == 1
@@ -68,12 +105,19 @@ def self_test(report_path):
                 app.after_cancel(callback)
             app.update_idletasks()
             app.destroy()
-        assert len(DocumentLibrary(root / 'store').list_documents()) == 1
+        reopened = DocumentLibrary(root / 'localappdata' / 'Ssokly',
+                                   capture_store=CaptureStore(root / 'desktop' / 'ssokly'))
+        assert len(reopened.list_documents()) == 1
     Path(report_path).write_text(json.dumps({
         'passed': True, 'frozen': bool(getattr(sys, 'frozen', False)),
         'python': sys.version.split()[0], 'relay': server_url(),
         'checks': ['Tk', 'PDFium render', 'DOCX', 'PPTX', 'XLSX', 'RTF',
-                   'capture persistence', 'pipe table', 'OpenAI/httpx imports', 'work image preview'],
+                   'empty first launch', 'offline user manual', 'capture persistence', 'pipe table',
+                   'OpenAI/httpx imports', 'work image preview'],
+        'initial_documents': initial_documents,
+        'initial_trash_documents': initial_trash_documents,
+        'initial_captures': initial_captures,
+        'initial_trash_captures': initial_trash_captures,
         'api_calls': 0,
     }, indent=2), encoding='utf-8')
 

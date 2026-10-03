@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from services.document_library import LibraryConflictError, LibraryReadOnlyError
 from services.diagnostics import log_failure
+from services.transfer_policy import TransferPolicyStore
 
 
 def purge_trash(library, snapshot):
@@ -14,14 +15,17 @@ def purge_trash(library, snapshot):
     removed_pages = set()
     capture_ids = set()
     managed_ids = set()
+    # Policy rows include approved text/OCR and belong to the same deletion.
+    policy_store = TransferPolicyStore(library.app_data_dir)
     try:
         with closing(sqlite3.connect(library.path, timeout=5)) as db:
             db.row_factory = sqlite3.Row
             db.execute('PRAGMA foreign_keys=ON')
             db.execute('ATTACH DATABASE ? AS captures', (str(library.capture_store.db_path),))
             db.execute('ATTACH DATABASE ? AS tasks_store', (str(library.task_store.db_path),))
+            db.execute('ATTACH DATABASE ? AS policies', (str(policy_store.path),))
             # Multi-file atomic commits require rollback journals, as used by these stores.
-            for schema in ('main', 'captures', 'tasks_store'):
+            for schema in ('main', 'captures', 'tasks_store', 'policies'):
                 if db.execute('PRAGMA ' + schema + '.journal_mode').fetchone()[0].lower() not in ('delete', 'truncate', 'persist'):
                     raise ValueError('저장소 저널 설정을 확인한 후 다시 시도해 주세요.')
             with db:
@@ -67,6 +71,7 @@ def purge_trash(library, snapshot):
                     db.execute('DELETE FROM settings WHERE key IN (?,?)', ('active_output:' + identity, 'auto_page_trash:' + identity))
                     db.execute('DELETE FROM documents WHERE id=?', (identity,))
                     db.execute('DELETE FROM tasks_store.tasks WHERE id=?', (identity,))
+                    db.execute('DELETE FROM policies.transfer_policies WHERE scope_key=?', ('document:' + identity,))
                 for identity in touched - managed_ids:
                     library._touch(db, identity)
                 for capture_id in capture_ids:
@@ -85,6 +90,8 @@ def purge_trash(library, snapshot):
                             original.replace(staged)
                             staged_files.append((original, staged))
                         db.execute('DELETE FROM captures.capture_items WHERE id=?', (capture_id,))
+                    # Keep restrictions while any document/legacy reference survives.
+                    db.execute('DELETE FROM policies.transfer_policies WHERE scope_key=?', ('capture:' + capture_id,))
     except Exception as error:
         log_failure('library_trash.purge_trash', error)
         library.capture_store._restore_staged_files(staged_files)

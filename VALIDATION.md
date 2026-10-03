@@ -4,6 +4,28 @@
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
 
+## 전체 점검·매뉴얼·깨끗한 첫 실행 — 2026-10-03 /13
+
+| 검사 | 실제 결과 |
+| --- | --- |
+| `tools/verify_capture_desk.py --all`와 동일 `run_gate(True)`, 테스트명/진단 스택 출력 추가 | 최종 579개, 실패·오류·건너뜀·통신 시도 0, 228.673초 |
+| `node --test test/*.test.js` (backend) | 18개 통과, 2.616초 |
+| `tools/verify_reopen_flow.py` | passed true, 임시 캡처 3개·프로세스 2개, 편집·라벨·메모·4검색필드·이미지 재열기 |
+| `tools/evaluate_desk_usability.py` | 100/125/150/175/200/225/250/300% × 4창 × 6상태 = 192조합, 위반 0. 검색·도움말 버튼 포함 |
+| 설명서/영구 삭제 집중 | 4개(9.250초) 및 23개(5.891초) 통과, 최종 전체 검사에도 포함 |
+| native Windows UI | 임시 합성 앱에서 ? 버튼/F1 열기, Alt+오른쪽 목차 이동, Esc 닫기 직접 확인 |
+| PyInstaller / Inno | 빌드·Setup 성공, 설치 컴파일 15.234초 |
+| 최종 EXE `--self-test-report` | passed/frozen true, Python 3.9.7, 파일 형식 읽기·PDFium 렌더·저장 재열기·표·업무 이미지·오프라인 설명서, API 0 |
+| 깨끗한 사용자 첫 실행 | 실제 기본 생성 경로를 임시 AppData/바탕화면으로 격리. 일반/휴지통 문서 및 캡처 각각 0건, UI 목록 비어 있음 |
+| 배포 내용·복사 | 1,136개 파일에 사용자 DB·캡처 이미지 0, EXE/Setup 아이콘 그룹 각 1개. staging/dist 전체 파일 및 Setup SHA256 일치 |
+| 의존성·공백 | `pip check`, `git diff --check` 통과 |
+
+초기 기준 검사는 572개 통과(228.292초). 도움말을 추가한 최초 UI 행렬은 150%·최소 창 3상태에서 원본 영역이 100px 미만이라 최소 창 높이에 버튼 높이를 반영했다. 변경 후 전체 검사의 기존 720×680 고정 기대값 2건은 실패했고, 새 최소 크기와 도움말 접근성을 검사하도록 갱신한 최종 579개는 통과했다. 최종 로그의 60초 스택 출력은 진행 진단이며 시간 초과 실패가 아니다. OS 배율은 변경하지 않았고 설명서 테스트의 Tk 배율은 복원한다.
+
+실행 중이던 dist EXE 잠금으로 최초 교체가 부분 진행되었다. 앱을 저장·정상 종료한 뒤 중간 폴더를 보존하고 검증 staging을 통째 재복사했다. 최종 전체 파일 해시 일치를 확인했으며 기존 사용자 캡처·DB는 삭제하지 않았다. 새 사용자 환경이 아닌 기존 PC에서 보이는 자료는 기존 AppData·지정 캡처 폴더의 저장 자료다.
+
+기록: `.local-results/final-audit-baseline-20261003.txt`, `final-audit-tests-20261003.txt`(중간 실패), `final-audit-tests-progress-20261003.txt`(최종), `final-usability-fixed-20261003.json`, `final-reopen-20261003.txt`, `final-release-build-20261003.txt`, `final-release-installer-20261003.txt`, `final-release-self-test-20261003.json`, `dist/release-manifest.json`. 유료 실제 AI 호출, 모델 정확도, 다른 PC 설치/제거, 다중 모니터 실사용·클립보드와 인증서 서명은 미검증. 전체 기능의 모든 환경에서 오류가 없음을 보장하는 결과는 아니다. README·STATUS·본 기록 갱신.
+
 ## 캡처 후 검색 버튼·재배포 — 2026-10-03 /11
 
 `python -m unittest tests.test_capture_desk_layout tests.test_capture_desk -v`: 32개 통과, 75.673초. 배포본 Tcl/Tk 환경으로 실행. 새 회귀 검사에서 합성 캡처 후 100/125/150/200/300% 배율 및 기본/좁은 보관함의 버튼 요청 폭·높이, 부모 내부 경계, 한글 폭과 입력칸 접근성 확인. 신규 단일 검사도 별도 통과(8.569초). PyInstaller·Inno Setup 성공(설치 컴파일 12.922초). 새 EXE 오프라인 자가검사 passed/frozen true 및 API 0. dist EXE/Setup 해시가 staging과 일치, 이전 배포본 백업. 로그는 `.local-results/search-button-tests-20261003.txt`, `search-release-build-20261003.txt`, `search-release-installer-20261003.txt`, `search-release-self-test-20261003.json`. 실제 사용자 PC 캡처 동작/서명/설치·제거와 전체 회귀는 재검증하지 않음.

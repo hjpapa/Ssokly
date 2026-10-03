@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from PIL import Image
 from services.document_library import DocumentLibrary, LibraryConflictError, LibraryReadOnlyError
+from services.transfer_policy import TransferPolicyStore, make_text_snapshot
 
 
 class TrashTests(unittest.TestCase):
@@ -176,3 +177,57 @@ class TrashTests(unittest.TestCase):
         self.assertEqual(external.read_bytes(), b'keep')
         self.assertTrue(self.library.get_document(self.doc['id'])['trashed'])
         self.assertTrue(Path(capture.path).exists())
+
+    def test_purge_removes_document_and_unreferenced_capture_policy_text(self):
+        capture, page = self.image_page()
+        policies = TransferPolicyStore(self.temp.name)
+        keys = ['document:' + self.doc['id'], 'capture:' + capture.id]
+        for key in keys:
+            policies.save(key, make_text_snapshot('synthetic manuscript').policy)
+        policies.save('document:unrelated', make_text_snapshot('keep').policy)
+        self.trash_page(page)
+        self.library.purge_trash(self.library.trash_snapshot())
+        for key in keys:
+            self.assertIsNone(policies.get(key))
+        self.assertEqual(policies.get('document:unrelated').approved_text, 'keep')
+
+    def test_shared_capture_and_surviving_document_keep_transfer_restrictions(self):
+        capture, page = self.image_page()
+        sibling = self.library.add_text_page(self.doc['id'], 'surviving text')
+        other = self.library.create_document('Other')
+        self.library.add_capture(other['id'], capture.id)
+        policies = TransferPolicyStore(self.temp.name)
+        policy = make_text_snapshot('allowed', original_text='allowed private').policy
+        keys = ['document:' + self.doc['id'], 'document:' + other['id'], 'capture:' + capture.id]
+        for key in keys:
+            policies.save(key, policy)
+        self.trash_page(page)
+        self.library.purge_trash(self.library.trash_snapshot())
+        self.assertEqual(self.library.pages(self.doc['id'])[0]['id'], sibling['id'])
+        for key in keys:
+            self.assertEqual(policies.get(key), policy)
+        self.library.trash(self.doc['id'])
+        self.library.purge_trash(self.library.trash_snapshot())
+        self.assertIsNone(policies.get(keys[0]))
+        for key in keys[1:]:
+            self.assertEqual(policies.get(key), policy)
+        self.assertTrue(Path(capture.path).exists())
+
+    def test_policy_delete_failure_rolls_back_all_stores_and_staged_file(self):
+        capture, page = self.image_page()
+        policies = TransferPolicyStore(self.temp.name)
+        keys = ['document:' + self.doc['id'], 'capture:' + capture.id]
+        for key in keys:
+            policies.save(key, make_text_snapshot('keep until commit').policy)
+        self.trash_page(page)
+        with sqlite3.connect(policies.path) as db:
+            db.execute("CREATE TRIGGER fail_policy_purge BEFORE DELETE ON transfer_policies "
+                       "WHEN OLD.scope_key LIKE 'capture:%' BEGIN SELECT RAISE(ABORT,'synthetic'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.library.purge_trash(self.library.trash_snapshot())
+        self.assertTrue(Path(capture.path).exists())
+        self.assertIsNotNone(self.library.task_store.get(self.doc['id']))
+        self.assertIsNotNone(self.library.capture_store.get(capture.id))
+        self.assertEqual(len(self.library.deleted_pages()), 1)
+        for key in keys:
+            self.assertEqual(policies.get(key).approved_text, 'keep until commit')

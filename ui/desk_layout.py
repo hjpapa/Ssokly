@@ -122,7 +122,10 @@ class LayoutMixin:
         # Above 150%, preserve the chosen font size and grow the minimum
         # window so controls cannot consume both reading surfaces entirely.
         factor = max(1.0, float(self.winfo_fpixels('1i')) / 144.0)
-        minimum = (round(720 * factor), round(680 * factor))
+        # The help button sits below Library; preserve the original reading
+        # space instead of taking its extra row from the image/editor panes.
+        help_height = self.help_button.winfo_reqheight() + 3
+        minimum = (round(720 * factor), round(680 * factor) + help_height)
         if self.minsize() != minimum:
             self.minsize(*minimum)
         if self.document and self.document.get('readonly') and not self.document.get('trashed'):
