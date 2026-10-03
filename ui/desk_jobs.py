@@ -10,6 +10,7 @@ from uuid import uuid4
 from PIL import Image
 
 from services.capture_service import capture_selected_region
+from services.image_clipboard import copy_image
 from services.document_service import LEGACY_DOCUMENT_EXTENSIONS, LOCAL_DOCUMENT_EXTENSIONS, SUPPORTED_FILE_EXTENSIONS, attachment_kind, mime_type_for, read_hwpx_file, read_text_file
 from services.file_import import import_local_document
 from ui.desk_text import fingerprint
@@ -41,7 +42,10 @@ class JobsMixin:
     def capture_page(self):
         self._capture(add=True)
 
-    def _capture(self, add=False):
+    def capture_and_copy(self):
+        self._capture(copy_to_clipboard=True)
+
+    def _capture(self, add=False, *, copy_to_clipboard=False):
         if not self.flush_edits():
             return
         if add and (not self.document or self.document.get('readonly') or self.document.get('trashed')):
@@ -59,8 +63,42 @@ class JobsMixin:
             finally:
                 self.deiconify()
             if image is not None:
-                self.accept_capture(image, document_id=doc_id)
+                try:
+                    if copy_to_clipboard:
+                        page = self.accept_capture(image, document_id=doc_id, auto_read=False)
+                        storage_status = self.status.get()
+                        self._copy_capture_image(image)
+                        if page is None:
+                            self.status.set(self.status.get() + ' ' + storage_status)
+                    else:
+                        self.accept_capture(image, document_id=doc_id)
+                finally:
+                    image.close()
         self.after_idle(select)
+
+    def _copy_capture_image(self, image):
+        try:
+            copy_image(image, owner=self.winfo_id())
+            self.status.set('이미지를 복사했습니다. 다른 문서에서 Ctrl+V로 붙여넣으세요.')
+            return True
+        except Exception as error:
+            log_failure('desk_jobs.copy_image', error)
+            self.status.set('이미지를 복사하지 못했습니다. 다른 프로그램의 클립보드 작업이 끝난 뒤 이미지 복사를 다시 누르세요.')
+            return False
+
+    def copy_current_image(self):
+        path = self.page.get('path') if self.page else None
+        if not path:
+            self.status.set('복사할 원본 이미지가 있는 페이지를 선택하세요.')
+            return False
+        try:
+            with Image.open(path) as image:
+                return self._copy_capture_image(image)
+        except Exception as error:
+            log_failure('desk_jobs.copy_current_image', error)
+            self.image_copy_button.configure(state='disabled')
+            self.status.set('원본 이미지를 읽지 못해 복사하지 않았습니다. 저장된 텍스트는 계속 사용할 수 있습니다.')
+            return False
 
     def accept_capture(self, image, *, document_id=None, source='capture', auto_read=True, title=None):
         """Durable original first; recoverable orphan if document linking fails."""

@@ -148,7 +148,7 @@ class WorkImageUITests(unittest.TestCase):
         self.dialog.data = png()
         with patch('ui.work_image.copy_image') as copy:
             self.dialog.copy()
-            copy.assert_called_once_with(png())
+            copy.assert_called_once_with(png(), owner=self.dialog.window.winfo_id())
 
     def test_image_window_minimum_reserves_preview_at_all_scales(self):
         from ui.desk_theme import apply_theme

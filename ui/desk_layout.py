@@ -125,7 +125,12 @@ class LayoutMixin:
         # The help button sits below Library; preserve the original reading
         # space instead of taking its extra row from the image/editor panes.
         help_height = self.help_button.winfo_reqheight() + 3
-        minimum = (round(720 * factor), round(680 * factor) + help_height)
+        actions_wrap = self.winfo_width() < (self._header_primary.winfo_reqwidth()
+                                             + self._header_secondary.winfo_reqwidth() + 30)
+        # Capture actions use a second row at narrow/high-DPI sizes. Reserve
+        # that row without reducing the original image/editor reading space.
+        action_height = self._header_primary.winfo_reqheight() if actions_wrap else 0
+        minimum = (round(720 * factor), round(680 * factor) + help_height + action_height)
         if self.minsize() != minimum:
             self.minsize(*minimum)
         if self.document and self.document.get('readonly') and not self.document.get('trashed'):
@@ -173,8 +178,6 @@ class LayoutMixin:
             self._header_logo.grid_remove()
         else:
             self._header_logo.grid()
-        actions_wrap = self.winfo_width() < (self._header_primary.winfo_reqwidth()
-                                             + self._header_secondary.winfo_reqwidth() + 30)
         self._header_primary.grid_configure(row=1 if actions_wrap else 0,
             column=0 if wrapped_header else 1, columnspan=3 if actions_wrap else (2 if wrapped_header else 1))
         self._header.configure(padding=(12, 3 if compact else 10))

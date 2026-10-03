@@ -77,6 +77,10 @@ def self_test(report_path):
             assert (initial_documents, initial_trash_documents,
                     initial_captures, initial_trash_captures) == (0, 0, 0, 0)
             assert app.document is None and app.page is None
+            from services.image_clipboard import copy_image
+            assert callable(copy_image)
+            assert str(app.image_copy_button.cget('state')) == 'disabled'
+            assert app.capture_copy_button.cget('text') == '캡처 후 복사'
             assert not app.document_tree.get_children()
             manual = app.show_help()
             app.update_idletasks()
@@ -88,6 +92,7 @@ def self_test(report_path):
             app.accept_capture(Image.new('RGB', (100, 100), 'white'), auto_read=False)
             app.update_idletasks()
             assert len(app.library.list_documents()) == 1
+            assert str(app.image_copy_button.cget('state')) == 'normal'
             assert len(source_table_blocks('A | B\nC | D')) == 1
             sample = io.BytesIO()
             Image.new('RGB', (100, 150), 'white').save(sample, 'PNG')
@@ -113,7 +118,7 @@ def self_test(report_path):
         'python': sys.version.split()[0], 'relay': server_url(),
         'checks': ['Tk', 'PDFium render', 'DOCX', 'PPTX', 'XLSX', 'RTF',
                    'empty first launch', 'offline user manual', 'capture persistence', 'pipe table',
-                   'OpenAI/httpx imports', 'work image preview'],
+                   'OpenAI/httpx imports', 'work image preview', 'capture image copy controls'],
         'initial_documents': initial_documents,
         'initial_trash_documents': initial_trash_documents,
         'initial_captures': initial_captures,

@@ -84,6 +84,9 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         header.columnconfigure(1, weight=1)
         self.capture_button = ttk.Button(self._header_primary, text='새 캡처', width=-6, command=self.capture_new, style='Primary.TButton')
         self.capture_button.pack(side='left', padx=3)
+        self.capture_copy_button = ttk.Button(self._header_primary, text='캡처 후 복사', width=-11,
+            command=self.capture_and_copy, style='Primary.TButton')
+        self.capture_copy_button.pack(side='left', padx=3)
         self.add_button = ttk.Button(self._header_primary, text='+ 페이지', width=-7, command=self.capture_page, style='Desk.TButton')
         self.add_button.pack(side='left', padx=3)
         ttk.Button(self._header_primary, text='파일 열기', width=-7, command=self.open_file, style='Desk.TButton').pack(side='left', padx=3)
@@ -240,6 +243,9 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         page_bar = ttk.Frame(self.image_panel)
         self._page_bar = page_bar
         page_bar.pack(fill='x', pady=(0, 5))
+        self.image_copy_button = ttk.Button(page_bar, text='이미지 복사', width=-10,
+            command=self.copy_current_image, state='disabled')
+        self.image_copy_button.pack(side='left', padx=(0, 4))
         self.page_selector = ttk.Combobox(page_bar, state='readonly', width=20)
         self.page_selector.pack(side='left', fill='x', expand=True)
         self.page_selector.bind('<<ComboboxSelected>>', self._page_selected)
@@ -385,7 +391,9 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
             self.page_selector.set('')
         self._replace(self.source_editor, self.page['text'] if self.page else '',
                       readonly=not self.page or self.page.get('readonly', False) or self.document.get('trashed', False))
-        self.image_view.load_path(self.page.get('path') if self.page else None)
+        image_loaded = self.image_view.load_path(self.page.get('path') if self.page else None)
+        can_copy_image = image_loaded and self.page and self.page.get('path')
+        self.image_copy_button.configure(state='normal' if can_copy_image else 'disabled')
         if self.page and not self.page.get('path') and str(self.page.get('source_path', '')).lower().endswith('.hwpx'):
             self.image_view.show_empty_message('HWPX 본문과 표를 읽었습니다.\n원본 지면은 더보기 → 원본 문서 파일 열기에서 확인하세요.\n삽입 이미지는 페이지 목록에서 따로 선택할 수 있습니다.')
         self.table_view.set_text(self.page['text'] if self.page else '')

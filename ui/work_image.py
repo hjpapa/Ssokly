@@ -9,6 +9,7 @@ from pathlib import Path
 
 from PIL import Image
 from services.work_image import generate_work_image
+from services.image_clipboard import copy_image
 from services.diagnostics import log_failure
 from ui.desk_widgets import ZoomImageView
 from ui.transfer_dialog import choose_transfer
@@ -148,7 +149,7 @@ class WorkImageWindow:
         if not self.data:
             return
         try:
-            copy_image(self.data)
+            copy_image(self.data, owner=self.window.winfo_id())
             self.note.set('이미지를 복사했습니다. 문서나 메신저에 붙여넣으세요.')
         except Exception as error:
             log_failure('work_image.copy', error)
@@ -159,44 +160,3 @@ class WorkImageWindow:
             self.window.after_cancel(self.after_id)
             self.after_id = None
         self.window.destroy()
-
-
-def copy_image(data):
-    """Transfer an owned Windows DIB handle; no clipboard access on generation."""
-    import ctypes
-    from ctypes import wintypes
-    buffer = io.BytesIO()
-    with Image.open(io.BytesIO(data)) as image:
-        image.convert('RGB').save(buffer, 'BMP')
-    dib = buffer.getvalue()[14:]
-    kernel, user = ctypes.windll.kernel32, ctypes.windll.user32
-    kernel.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
-    kernel.GlobalAlloc.restype = wintypes.HGLOBAL
-    kernel.GlobalLock.argtypes = [wintypes.HGLOBAL]
-    kernel.GlobalLock.restype = ctypes.c_void_p
-    kernel.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
-    kernel.GlobalFree.argtypes = [wintypes.HGLOBAL]
-    user.OpenClipboard.argtypes = [wintypes.HWND]
-    user.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
-    user.SetClipboardData.restype = wintypes.HANDLE
-    handle = kernel.GlobalAlloc(0x0002, len(dib))
-    if not handle:
-        raise OSError('allocation')
-    opened = False
-    try:
-        pointer = kernel.GlobalLock(handle)
-        if not pointer:
-            raise OSError('lock')
-        try:
-            ctypes.memmove(pointer, dib, len(dib))
-        finally:
-            kernel.GlobalUnlock(handle)
-        opened = bool(user.OpenClipboard(None))
-        if not opened or not user.EmptyClipboard() or not user.SetClipboardData(8, handle):
-            raise OSError('clipboard')
-        handle = None
-    finally:
-        if opened:
-            user.CloseClipboard()
-        if handle:
-            kernel.GlobalFree(handle)

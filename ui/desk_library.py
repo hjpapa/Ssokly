@@ -134,6 +134,7 @@ class LibraryMixin:
         self._replace(self.source_editor, '', readonly=True)
         self._replace(self.output_editor, '', readonly=True)
         self.image_view.set_image(None)
+        self.image_copy_button.configure(state='disabled')
         self.table_view.set_text('')
 
     def _purge_snapshot(self, snapshot, parent=None):
@@ -183,6 +184,9 @@ class LibraryMixin:
 
     def _page_context_menu(self, event):
         menu = tk.Menu(self, tearoff=False)
+        menu.add_command(label='이미지 복사', command=self.copy_current_image,
+                         state=str(self.image_copy_button.cget('state')))
+        menu.add_separator()
         allowed = self.page and self.document and not self.document.get('readonly') and not self.document.get('trashed')
         menu.add_command(label='이 페이지 삭제 · 휴지통으로', command=self.delete_current_page,
                          state='normal' if allowed else 'disabled')

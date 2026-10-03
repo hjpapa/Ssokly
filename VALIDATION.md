@@ -1,8 +1,44 @@
 # Ssokly 사용 검증 기록
 
-마지막 전체 기능 검증일: 2026-10-03. 보고서용 확인 이력은 아래에 보존. 실제 서명·별도 PC 보안 경고 검사는 미수행.
+마지막 전체 기능 검증일: 2026-10-03 (/17 캡처 이미지 복사, 오프라인 591개 통과). 보고서용 확인 이력은 아래에 보존. 실제 서명·별도 PC 보안 경고 검사는 미수행.
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
+
+## 캡처 이미지 복사 — 2026-10-03 /17
+
+| 검사 | 실제 결과 |
+| --- | --- |
+| `python -m unittest tests.test_capture_copy -v` | 12개 통과, 18.772초. 세 처리 방식의 AI 미호출·영역 선택 취소·저장/복사 실패·원본 크기·쪽 변경·비활성 상태·좁은 창·Windows API mock |
+| `python tools/verify_capture_desk.py --all` | 최종 591개 통과, 308.083초. 실패·오류·건너뜀·통신 시도 0 |
+| `python tools/evaluate_desk_usability.py --output .local-results/capture-copy-usability-final-20261003.json` | 100/125/150/175/200/225/250/300% × 4창 × 6상태, 192조합 표시 문제 0. 캡처 후 복사·이미지 복사 포함 |
+| `powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .local-results/verify_native_image_clipboard_20261003.ps1` | 실제 Tk HWND·CF_DIB·Pillow 읽기. RGB 13×7 원본 픽셀, RGBA 5×3 흰색 배경 합성, PNG 17×9, 소유자 없음/손상 입력의 기존 이미지 보존, 창 종료 후 이미지 유지의 6항목 통과. 기존 클립보드 4형식 백업·복원, 내용 미기록 |
+| PyInstaller·Inno / EXE `--self-test-report` | 빌드·Setup 성공(설치 컴파일 16.156초), passed/frozen true. 새 버튼과 공통 복사 모듈 포함, 빈 첫 실행·API 0 확인 |
+| dist 교체 | 검증 staging과 앱 1,136개 파일·Setup SHA256 일치. 사용자 DB·키·로그 0. 직전 배포 백업 및 manifest 갱신 |
+
+첫 제한 환경 실행은 Tk init.tcl 접근 오류가 있어 허용된 런타임 접근 후 재실행했다. 초기 레이아웃·업무 이미지 30개 검사는 150%의 좁은 창 처리 중 원본 높이 124px 때문에 1개 실패했고 첫 화면 행렬은 3조합 실패했다. 상단 버튼 두 줄의 높이를 최소 창에 추가한 후 최종 전체 회귀와 화면 행렬을 통과했다. 이전 실패 상태는 성공 결과에 합산하지 않으며 집중 12개는 최종 591개에도 포함된다. 최종 문제 상태의 원본 높이는 155px, 편집창은 109px였다.
+
+합성 자료·임시 저장소만 사용했다. 실제 클립보드 검사는 실제 Windows API 및 이미지 읽기까지 확인했으며 한글/Word에서 직접 Ctrl+V로 붙여넣기와 실제 마우스 영역 드래그는 수행하지 않았다. 실제 사용자 자료·실행 중인 외부 앱·운영 서버는 변경하지 않았고 유료 API 호출 0. EXE/Setup 미서명, 다른 PC 설치·제거 미검증. /14 실제 AI 품질 문제는 이번 이미지 복사 작업으로 해결되지 않았다.
+
+기록: `.local-results/capture-copy-offline-20261003.txt`, `capture-copy-usability-final-20261003.json`, `native-image-clipboard-20261003.json`, `native-image-clipboard-restore-20261003.json`, `capture-copy-release-build-20261003.txt`, `capture-copy-release-installer-20261003.txt`, `capture-copy-release-self-test-20261003.json`, `capture-copy-release-artifacts-20261003.json`, `capture-copy-publish-20261003.json`. README·STATUS·내장 사용 설명서·본 기록 갱신.
+
+## 실제 운영 AI 호출 — 2026-10-03 /14
+
+사용자의 실제 호출 요청에 따라 `dist/Ssokly/ai-server.json`과 같은 운영 중계 서버를 사용했다. 합성 표와 안내문만 전송하고 기존 `extract_text_from_image`, `generate_text_action`, `generate_work_image` 서비스 함수를 호출했다. 로컬 키와 직접 호출 fallback은 차단했다. HTTP 응답 경로·상태·소요 시간만 관찰하며 인증 정보는 기록하지 않았다.
+
+| 실제 호출 | 결과 | 시간 |
+| --- | --- | --- |
+| 표 OCR | HTTP 200, 원문 셀·행·날짜·시간 보존, 표 파싱 가능 | 5.863초 |
+| 안내문 OCR | HTTP 200, 날짜·조건·주체 보존 | 2.844초 |
+| 요약 | HTTP 200, 주요 사실·조건 보존 | 3.018초 |
+| 일정·할 일 | HTTP 200, **과학교실 신청 마감과 행사일 누락** | 4.941초 |
+| 교직원 안내문 | HTTP 200, 주요 사실·내부 업무 포함 확인 | 3.051초 |
+| 학부모 안내문 | HTTP 200, 내부 업무 제외, **신청 주체를 학부모→학생으로 변경** | 2.971초 |
+| 가정통신문 | HTTP 200, 주요 날짜·대상·비용·회신 조건 확인 | 3.064초 |
+| 업무 이미지 | HTTP 200, 유효한 1024×1536 PNG(1,187,579바이트), 입력 요약 5개 항목 육안 대조 | 14.497초 |
+
+8회 모두 완료, 재시도 없음. **호출 성공 / 내용 품질 미통과**로 기록한다. 최초 단어 포함 자동 체크는 모두 통과했지만 수동 대조로 행사 누락과 주체 변경을 확인하여 보고서에 실패 항목을 추가했다. 일부 표본의 성공은 실제 공문 전체의 정확성을 보장하지 않는다. 이미지의 가독성과 한글·날짜·주체·조건은 이 표본에서 확인했다. EXE UI 클릭부터의 통합 실사용 검사는 아니며, 대용량 Blob 경로·취소 중 실제 비용 처리는 이번 호출 범위에 포함하지 않았다.
+
+기록은 `.local-results/live-final-20261003/report.json` 및 합성/생성 PNG. 사용자 자료·기본 DB·배포본은 변경하지 않았다. /13 오프라인 검사 및 빌드는 재실행하지 않았고 제품 코드·서버 변경은 없다. STATUS·본 기록 갱신. 다음 과제는 일정의 전체 행사 보존과 안내문의 신청 주체 보존 보완이다.
 
 ## 전체 점검·매뉴얼·깨끗한 첫 실행 — 2026-10-03 /13
 
