@@ -1,8 +1,64 @@
 # Ssokly 사용 검증 기록
 
-마지막 기능 검증일: 2026-09-30. 문서 정비일: 2026-09-30.
+마지막 전체 기능 검증일: 2026-10-03. 보고서용 확인 이력은 아래에 보존. 실제 서명·별도 PC 보안 경고 검사는 미수행.
 
 [현재 사용법](README.md) · [작업 상태와 이력](STATUS.md)
+
+## 캡처 후 검색 버튼·재배포 — 2026-10-03 /11
+
+`python -m unittest tests.test_capture_desk_layout tests.test_capture_desk -v`: 32개 통과, 75.673초. 배포본 Tcl/Tk 환경으로 실행. 새 회귀 검사에서 합성 캡처 후 100/125/150/200/300% 배율 및 기본/좁은 보관함의 버튼 요청 폭·높이, 부모 내부 경계, 한글 폭과 입력칸 접근성 확인. 신규 단일 검사도 별도 통과(8.569초). PyInstaller·Inno Setup 성공(설치 컴파일 12.922초). 새 EXE 오프라인 자가검사 passed/frozen true 및 API 0. dist EXE/Setup 해시가 staging과 일치, 이전 배포본 백업. 로그는 `.local-results/search-button-tests-20261003.txt`, `search-release-build-20261003.txt`, `search-release-installer-20261003.txt`, `search-release-self-test-20261003.json`. 실제 사용자 PC 캡처 동작/서명/설치·제거와 전체 회귀는 재검증하지 않음.
+
+## 실행파일 아이콘·dist 교체 — 2026-10-03 /09
+
+프로젝트 `.venv/Scripts/python.exe tools/build_windows.py --dist-dir .local-results/icon-release-20261003` 성공. Inno Setup 컴파일 성공(15.547초). 새 EXE `--self-test-report`는 passed/frozen true, Tk/PDFium/Office 읽기/저장 재열기/표/업무 이미지 확인, API 0회. ICO 7크기 및 EXE/Setup PE 아이콘 그룹 각 1개 확인. 검증 산출물과 dist의 EXE/Setup SHA256 일치. 이전 배포본 백업 완료. 빌드/설치 로그 및 자가검사 JSON은 `.local-results/icon-release-*20261003.*`에 보존. 최초 상위 가상환경은 PyInstaller 미설치로 실패, 프로젝트 환경으로 재실행 성공. 전체 회귀 재실행·실제 설치/제거·인증서 서명은 미수행. /08 검증 이력 유지.
+
+## 앱 오류·표 UX·서명 배포 절차 — 2026-10-03 / 08
+
+| 검사 | 실제 결과 |
+| --- | --- |
+| `tools/verify_capture_desk.py --all` 동일 run_gate(True), 진단용 runner 출력 추가 | 571개, 실패/오류/건너뜀/통신 시도 0, 187.626초 |
+| `tools/verify_v2_release.py` | 159개, 실패/오류/건너뜀/통신 시도 0, 4.078초 |
+| `tools/verify_reopen_flow.py` | passed true, 임시 캡처 3개/프로세스 2개 |
+| `tools/evaluate_desk_usability.py` | 모의 배율 100~300%·4창·6상태 192조합, 검사 기준 위반 0 |
+| 표/서명 집중 | 16개 통과, 3.989초. 최종 인증서 필터 보완 후 서명 mock 3개 재통과(0.050초) |
+| 합성 큰 표 | 33블록·35,603자, 첫 표시 465.55ms, 동일 본문 재설정 0.00ms; 33번째 표/선택 행 유지. 전체 셀 상세/복사 회귀 통과 |
+| PyInstaller·Inno | 별도 검증 폴더 빌드·Setup 컴파일 성공(15.359초), 앱/설치 아이콘 포함 |
+| 검증 EXE `--self-test-report` | passed/frozen true, Python 3.9.7, Tk/PDFium/DOCX/PPTX/XLSX/RTF/저장 재열기/표/업무 이미지, API 0 |
+| 인증서·파일 서명 | 현재 사용자 코드 서명 인증서 없음. 새 EXE/Setup 모두 NotSigned. 실제 서명 미검증 |
+| 의존성·문법 | pip check 정상, 변경 Python compileall 정상 |
+
+초기 567개 검사는 Python의 Tcl/Tk 리소스 누락으로 실패 1/오류 125였다. 기존 배포본의 `_tcl_data`·`_tk_data`를 검사 프로세스 환경에 지정해 Tk 8.6.9 정상 생성 후 재실행했다. 중간 전체 검사는 결과 출력 없는 장기 실행 중 진단을 위해 중단했고 통과 결과가 아니다. 최종 실행은 faulthandler 60초 진단을 사용했으며 고배율 검사 중 update 위치가 출력되었지만 해당 검사와 전체 571개가 정상 완료되었다. OS 배율은 변경하지 않았다. 빌드 초기 사용자 홈 경로 권한 오류는 승인된 빌드 실행에서 해소했다. 최초 화면 캡처 권한 오류 이후 합성 앱 창만 캡처해 육안 확인했다.
+
+`tests/test_windows_release.py`는 컴파일러·서명 호출을 mock으로 바꿔 순서, 서명 검증 실패 시 설치파일 생성 중단, 인증서 없으면 빌드 전 중단, 마지막에만 성공 manifest 생성, 외부 게시 없음 등을 검사한다. 실제 인증서·타임스탬프 서버·서명된 제거 프로그램 확인을 대체하지 않는다.
+
+산출물/기록: `.local-results/release-audit-tests-final-20261003.txt`, `release-audit-focused-20261003.txt`, `release-audit-build-20261003.txt`, `release-audit-installer-20261003.txt`, `release-audit-20261003/{usability.json,table-performance.json,table-preview.png,packaged-self-test.json}`, `ui-release-20261003/release-manifest.json`. manifest는 signed false/published false. 기존 dist 미변경. 새 Setup의 실제 설치/제거·별도 PC 다운로드·Windows 경고·실물 공문 품질·기존 HWPX 지연 원인 해결은 미검증. 유료 호출 0, 운영 서버 변경 없음. README·STATUS·본 기록 갱신.
+
+## 보고서 화면 가독성 재확인 — 2026-10-01 / 04
+
+후속 정정(2026-10-01 /05): 아래 캡처는 실제 앱 위젯의 픽셀이지만 시험 코드로 자료·선택·가림·결과 표시 상태를 준비한 화면이다. 특히 그림 Ⅲ-5는 사용자의 드래그부터 전송까지 연속 검증한 장면이 아니다. 원고 캡션에 이를 명시하였다. /05의 3·4절 보강에는 소스 기반 설명도 3장(4,000×1,840 PNG와 SVG)을 추가하였다. 문서 링크·공백·도식 XML·치수와 육안 확인을 수행했으며 앱 회귀·실제 조작·AI 호출·배포 시험은 재실행하지 않았다.
+
+`docs/report/capture_readable_screens.py`로 독립 시험 앱의 실제 화면을 MSS 원본 픽셀 PNG로 다시 저장했다. 이전 축소 JPEG의 확대 변환이나 글자 재합성이 아니다. 앱 창과 본문 표시 글꼴 크기를 조정하고, HWPX 표의 열 폭을 넓혀 작업 영역만 저장했다. PDF·HWPX는 기존 지정 파일을 로컬로 읽었으며 요약·생성 이미지는 이전 가상 자료의 실제 응답을 재표시했다. 원고의 그림 Ⅲ-2~Ⅲ-7 링크는 `docs/report/screenshots/readable/`로 교체했다.
+
+전체 화면은 2100×1200, 가림 창 1250×900, 캡처 관리 1600×1000, 이미지 미리보기 1250×1200 픽셀이다. 표 작업 영역의 최종 크기는 같은 폴더의 `capture-manifest.json`에 기록한다. PNG의 한글·날짜·조작 버튼과 생성 이미지 본문을 실제 이미지로 확인했다. 표는 전체 HWPX 성능 검증이 아닌 추진 일정의 일부 발췌이며 /02의 전체 표 탭 응답 지연 제한은 유지한다.
+
+캡처 도구의 첫 글꼴 폭 조정 재실행은 Python 3.9 `nametofont(root=...)` 인자 오류로 중단되어 호환되는 `Font(root=..., exists=True)`로 수정 후 재실행했다. 제품 코드 수정은 없다. 네트워크 차단·새 AI 요청 0회, 전체 회귀·운영 API·설치본 재검증 없음. 문서 링크와 공백 및 PNG 형식을 확인했다. 사용자 취소에 따라 2절 라의 이미지 생성 설명 추가나 그림 이동은 수행하지 않았다.
+
+## 연구보고서용 지정 파일·화면 확인 — 2026-10-01 / 02
+
+`docs/report/preview_report_screens.py`로 최신 소스의 Python 3.9.7 Windows 앱을 독립 시험 저장소에 실행했다. 네트워크 함수는 차단하고 기본 사용자 저장소·키·설정은 사용하지 않았다. 보고서용 화면 확인이며 전체 회귀, 설치본, 실제 모델 품질 시험은 재실행하지 않았다.
+
+| 대상 | 확인 결과 |
+| --- | --- |
+| 지정 연구대회 계획 PDF | 35쪽 원본 이미지와 내장 텍스트로 로컬 가져오기. OCR 대기 0, 5쪽 원본·추출 텍스트의 대조 화면 저장 |
+| 지정 연구대회 계획 HWPX | 본문 1개·참조 삽입 이미지 5개, 총 6항목 가져오기. 삽입 이미지 OCR 대기 5이며 실행하지 않음. 본문 표 파서의 구분 블록 33개 집계 |
+| HWPX 전체 본문 표 탭 | 표시 과정에서 응답 지연을 관찰. 정상 완료를 확인하지 못하여 해당 독립 창 종료. 원인 미확정, 일부 표 사본의 화면과 구분 |
+| HWPX 일부 표 사본 | 원문에서 추출한 표 일부를 별도 시험 문서에 준비하여 표·행 상세·복사 버튼의 표시 확인. 원본 한글 지면 렌더링을 주장하지 않음 |
+| 가상 업무 자료 | 2026-09-30의 실제 저장 요약·생성 이미지 응답을 재표시. 요약 창, 전송 사본의 가림 표시, 검색·여러 장 선택 상태의 캡처 관리, 이미지 미리보기·저장·복사 버튼 화면 저장 |
+| 보고서 자산 | JPEG 6장 열기·형식·해상도, 링크 누락 0, 관계도 PNG 4000×1840/600dpi와 SVG XML·라벨 폭·한글·연결선 시각 확인 |
+
+HWPX 지연 점검은 임시 저장소를 읽기 전용으로 조회했다. 본문 33,506자·380행, 표 블록 33개·150행·544셀, 최대 셀 930자. 별도 Python 3.12 무통신 프로세스에서 `source_table_blocks` 0.919ms, 본문 `review_spans` 9.936ms, 기본 첫 표 검토 0.078ms였으며 UI 지연의 원인이나 해결을 입증하지 않는다. Python 3.9의 Tk 표시·이벤트·배치 경로는 후속 확인이 필요하다.
+
+집계 보고서: `.local-results/report-capture-20261001/report-verification.json`. 지정 원본 두 파일은 해시 기록 이후 SHA256 불변을 확인했다. 보고서 캡처는 `docs/report/screenshots/`에 저장하고 자료·응답 날짜와 HWPX 일부 표의 성격을 원고 뒤 작성 메모에 명시했다. **새 AI 요청 0회**, 원본 파일 외부 전송 없음. 제품 소스 변경·커밋·푸시·배포 없음. 독립 시험 프로세스는 종료했다.
 
 ## 가림 수정본 실행파일 반영 — 2026-09-30 / 09
 

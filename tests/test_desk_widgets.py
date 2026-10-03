@@ -250,6 +250,23 @@ class DeskWidgetTests(unittest.TestCase):
         self.assertEqual(view.selected_table, -1)
         self.assertNotIn('10월 8일', view.detail.get('1.0', 'end-1c'))
 
+    def test_table_return_preserves_selection_and_keyboard_copy_full_cell(self):
+        copied = Mock()
+        view = InlineTableView(self.root, on_copy=copied)
+        source = '항목\t내용\n1\t첫째\n2\t' + '긴 본문 ' * 200
+        view.set_text(source)
+        view.tree.selection_set('2')
+        view.show_row()
+        with patch.object(view, 'select_table') as reset:
+            view.set_text(source)
+            reset.assert_not_called()
+        self.assertEqual(view.tree.selection(), ('2',))
+        self.assertNotIn('병합 이어짐', view.detail.get('1.0', 'end-1c'))
+        self.assertEqual(view._copy_row_shortcut(), 'break')
+        copied.assert_called_once_with('2\t' + '긴 본문 ' * 200)
+        view.set_text('새 표\t값\n새 행\t내용')
+        self.assertEqual(view.tree.selection(), ('0',))
+
 
 if __name__ == '__main__':
     unittest.main()

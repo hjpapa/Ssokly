@@ -143,11 +143,13 @@ class CaptureDeskApp(LibraryMixin, LayoutMixin, JobsMixin, tk.Tk):
         self.query = tk.StringVar()
         search_bar = ttk.Frame(self.library_panel)
         search_bar.pack(fill='x', pady=(3, 5))
-        self.search_entry = ttk.Entry(search_bar, textvariable=self.query)
+        # Reserve the action first: the entry must shrink when the sidebar narrows.
+        # A negative width is a minimum, so Korean glyphs still fit at high DPI.
+        self.search_button = ttk.Button(search_bar, text='검색', width=-5, command=self._run_search)
+        self.search_button.pack(side='right', padx=(5, 0))
+        self.search_entry = ttk.Entry(search_bar, textvariable=self.query, width=1)
         self.search_entry.pack(side='left', fill='x', expand=True)
         self.search_entry.bind('<Return>', lambda _event: self._run_search())
-        self.search_button = ttk.Button(search_bar, text='검색', width=5, command=self._run_search)
-        self.search_button.pack(side='right', padx=(5, 0))
         self.query.trace_add('write', self._search_changed)
         self.label_filter = tk.StringVar(value='전체 라벨')
         self.label_picker = ttk.Combobox(self.library_panel, textvariable=self.label_filter,

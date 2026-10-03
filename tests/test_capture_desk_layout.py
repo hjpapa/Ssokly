@@ -30,6 +30,31 @@ class CaptureDeskLayoutTests(unittest.TestCase):
                     self.assertGreaterEqual(button.winfo_width(), font.measure(button.cget('text')) + 2 * padding[0])
                     self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth())
 
+    def test_search_button_fits_after_capture_and_sidebar_resize(self):
+        for percent in (100, 125, 150, 200, 300):
+            app = self.create_app(percent / 75)
+            app.geometry('1280x800')
+            app.accept_capture(Image.new('RGB', (800, 1100), 'white'), auto_read=False)
+            app.update()
+            if not app.library_panel.winfo_ismapped():
+                app.toggle_library()
+                app.update()
+            for narrow in (False, True):
+                if narrow and len(app.main_split.panes()) == 2:
+                    app.main_split.sashpos(0, app._layout_metrics()[0])
+                    app._schedule_layout()
+                    app.update()
+                with self.subTest(percent=percent, narrow=narrow):
+                    button = app.search_button
+                    bar = button.master
+                    self.assert_visible(button)
+                    self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth())
+                    self.assertGreaterEqual(button.winfo_height(), button.winfo_reqheight())
+                    self.assertLessEqual(button.winfo_x() + button.winfo_width(), bar.winfo_width())
+                    self.assertGreater(app.search_entry.winfo_width(), 10)
+                    font = tkfont.Font(root=app, font=ttk.Style(app).lookup('TButton', 'font'))
+                    self.assertGreaterEqual(button.winfo_width(), font.measure('검색') + 10)
+
     def test_table_row_height_follows_scaled_font(self):
         for percent in (100, 150, 200, 300):
             app = self.create_app(percent / 75)

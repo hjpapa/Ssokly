@@ -322,6 +322,8 @@ class InlineTableView(ttk.Frame):
         self.vertical.grid(row=1, column=1, sticky='ns')
         self.horizontal.grid(row=2, column=0, sticky='ew')
         self.tree.configure(yscrollcommand=self.vertical.set, xscrollcommand=self.horizontal.set)
+        self.tree.tag_configure('alternate', background='#f2f7f8')
+        self.tree.bind('<Control-c>', lambda _event: self._copy_row_shortcut())
         self.tree.bind('<<TreeviewSelect>>', lambda _event: self.show_row())
         detail_frame = ttk.Frame(self)
         detail_frame.columnconfigure(0, weight=1)
@@ -341,6 +343,8 @@ class InlineTableView(ttk.Frame):
         self.set_text('')
 
     def set_text(self, text):
+        if self.blocks and (text or '') == self.source_text:
+            return  # Keep the selected table, row and scroll position on tab return.
         self.source_text = text or ''
         self.blocks = source_table_blocks(self.source_text)
         self.selector.configure(values=[f'표 {i + 1} · 원문 {block.start_line}행 · {len(block.rows)}행'
@@ -354,7 +358,7 @@ class InlineTableView(ttk.Frame):
             self.selector.configure(state='disabled')
             self.tree.delete(*self.tree.get_children())
             self.tree.configure(columns=())
-            self._set_detail('표가 없습니다. 탭으로 구분된 원문 표를 이곳에서 확인할 수 있습니다.')
+            self._set_detail('인식된 표가 없습니다. 탭 구분 표, 공백을 둔 | 구분 표, Markdown 표를 확인할 수 있습니다.')
         enabled = bool(self.blocks) and self.on_copy is not None
         for button in (self.copy_row_button, self.copy_table_button):
             button.configure(state=tk.NORMAL if enabled else tk.DISABLED)
@@ -375,13 +379,14 @@ class InlineTableView(ttk.Frame):
         for i in columns:
             column = int(i)
             self.tree.heading(i, text=f'열 {column + 1}')
-            measured = max((table_font.measure(row[column]) + 24
+            measured = max((table_font.measure(row[column][:120]) + 24
                             for row in block.rows if column < len(row)), default=100)
             self.tree.column(i, width=max(90, min(380, measured)), minwidth=60, stretch=False)
         for i, row in enumerate(block.rows):
             notice = ' · 확인' if review_spans('\t'.join(row)) else ''
             self.tree.insert('', tk.END, iid=str(i), text=f'{block.line_number(i)}행{notice}',
-                             values=row + [''] * (len(columns) - len(row)))
+                             values=row + [''] * (len(columns) - len(row)),
+                             tags=('alternate',) if i % 2 else ())
         self.tree.xview_moveto(0)
         self.tree.yview_moveto(0)
         self.tree.selection_set('0')
@@ -402,7 +407,8 @@ class InlineTableView(ttk.Frame):
         block = self.blocks[self.selected_table]
         row_index = int(selection[0])
         values = block.rows[row_index]
-        self._set_detail(f'원문 {block.line_number(row_index)}행 · ↳ 병합 이어짐\n' + '\n'.join(
+        merged = ' · ↳ 병합 이어짐' if any('↳' in value for value in values) else ''
+        self._set_detail(f'원문 {block.line_number(row_index)}행{merged}\n' + '\n'.join(
             f'열 {i + 1}: {value if value else "(빈 셀)"}' for i, value in enumerate(values)))
 
     def copy_row(self):
@@ -410,6 +416,10 @@ class InlineTableView(ttk.Frame):
         if self.selected_table < 0 or not selection or self.on_copy is None:
             return
         self.on_copy('\t'.join(self.blocks[self.selected_table].rows[int(selection[0])]))
+
+    def _copy_row_shortcut(self):
+        self.copy_row()
+        return 'break'
 
     def copy_table(self):
         if self.selected_table < 0 or self.on_copy is None:

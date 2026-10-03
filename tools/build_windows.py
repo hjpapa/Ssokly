@@ -19,6 +19,7 @@ def main():
     subprocess.run([
         sys.executable, '-m', 'PyInstaller', '--noconfirm', '--windowed',
         '--onedir', '--name', 'Ssokly', '--paths', str(ROOT),
+        '--icon', str(ROOT / 'assets/ssokly-capture-mark.ico'),
         '--distpath', str(distribution_root),
         '--workpath', str(ROOT / '.local-results/pyinstaller'),
         '--specpath', str(ROOT / '.local-results'),
